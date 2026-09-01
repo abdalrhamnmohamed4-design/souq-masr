@@ -19,7 +19,7 @@
   "actions": [],
   "links": [],
   "states": [],
-  "field_order": ["location_key", "location_name", "location_type", "parent_souq_masr_location", "is_group"],
+  "field_order": ["location_key", "location_name", "location_type", "parent_souq_masr_location", "is_group", "lft", "rgt", "old_parent"],
   "fields": [
     {
       "fieldname": "location_key",
@@ -45,7 +45,36 @@
       "fieldtype": "Link",
       "options": "Souq Masr Location"
     },
-    { "fieldname": "is_group", "label": "Is Group", "fieldtype": "Check", "default": "0" }
+    { "fieldname": "is_group", "label": "Is Group", "fieldtype": "Check", "default": "0" },
+    {
+      "fieldname": "lft",
+      "fieldtype": "Int",
+      "hidden": 1,
+      "label": "lft",
+      "no_copy": 1,
+      "print_hide": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "rgt",
+      "fieldtype": "Int",
+      "hidden": 1,
+      "label": "rgt",
+      "no_copy": 1,
+      "print_hide": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "old_parent",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "ignore_user_permissions": 1,
+      "label": "old_parent",
+      "no_copy": 1,
+      "options": "Souq Masr Location",
+      "print_hide": 1,
+      "report_hide": 1
+    }
   ],
   "permissions": [
     { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
