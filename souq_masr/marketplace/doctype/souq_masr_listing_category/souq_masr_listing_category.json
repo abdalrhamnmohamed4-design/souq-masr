@@ -1,0 +1,92 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Listing Category",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "is_tree": 1,
+  "autoname": "field:category_key",
+  "naming_rule": "By fieldname",
+  "engine": "InnoDB",
+  "creation": "2025-01-01 00:00:00.000000",
+  "modified": "2025-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "category_key",
+    "name_ar",
+    "name_en",
+    "parent_souq_masr_listing_category",
+    "is_group",
+    "icon",
+    "sort_order",
+    "active",
+    "has_brands",
+    "allowed_conditions",
+    "allowed_selling_types",
+    "fields"
+  ],
+  "fields": [
+    {
+      "fieldname": "category_key",
+      "label": "Category Key",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "unique": 1,
+      "description": "Stable slug matching the mobile app's Category.id (e.g. 'cars', 'realestate_sale') — kept identical on purpose so the API response shape doesn't force a mobile-side remap"
+    },
+    { "fieldname": "name_ar", "label": "Name (Arabic)", "fieldtype": "Data", "reqd": 1, "in_list_view": 1 },
+    { "fieldname": "name_en", "label": "Name (English)", "fieldtype": "Data", "reqd": 1 },
+    {
+      "fieldname": "parent_souq_masr_listing_category",
+      "label": "Parent Category",
+      "fieldtype": "Link",
+      "options": "Souq Masr Listing Category"
+    },
+    { "fieldname": "is_group", "label": "Is Group", "fieldtype": "Check", "default": "0" },
+    { "fieldname": "icon", "label": "Icon", "fieldtype": "Data", "description": "Icon name from the mobile app's icon set" },
+    { "fieldname": "sort_order", "label": "Sort Order", "fieldtype": "Int", "default": "0" },
+    { "fieldname": "active", "label": "Active", "fieldtype": "Check", "default": "1" },
+    { "fieldname": "has_brands", "label": "Has Brands", "fieldtype": "Check", "default": "0" },
+    {
+      "fieldname": "allowed_conditions",
+      "label": "Allowed Conditions (one per line)",
+      "fieldtype": "Small Text"
+    },
+    {
+      "fieldname": "allowed_selling_types",
+      "label": "Allowed Selling Types (one per line)",
+      "fieldtype": "Small Text"
+    },
+    {
+      "fieldname": "fields",
+      "label": "Listing Attributes",
+      "fieldtype": "Table",
+      "options": "Souq Masr Listing Attribute",
+      "description": "The exact per-category dynamic fields the mobile post-ad wizard renders for this category"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "Souq Masr Admin",
+      "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1
+    },
+    {
+      "role": "All",
+      "read": 1
+    },
+    {
+      "role": "Guest",
+      "read": 1
+    }
+  ],
+  "sort_field": "sort_order",
+  "sort_order": "ASC"
+}

@@ -1,0 +1,49 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Brand",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "field:brand_key",
+  "naming_rule": "By fieldname",
+  "engine": "InnoDB",
+  "creation": "2025-01-01 00:00:00.000000",
+  "modified": "2025-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["brand_key", "brand_name", "logo", "categories"],
+  "fields": [
+    {
+      "fieldname": "brand_key",
+      "label": "Brand Key",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "unique": 1,
+      "description": "Matches the mobile app's Brand.id (e.g. 'car-bmw', 'phone-apple')"
+    },
+    { "fieldname": "brand_name", "label": "Brand Name", "fieldtype": "Data", "reqd": 1, "in_list_view": 1 },
+    { "fieldname": "logo", "label": "Logo", "fieldtype": "Attach Image" },
+    {
+      "fieldname": "categories",
+      "label": "Categories",
+      "fieldtype": "Table MultiSelect",
+      "options": "Souq Masr Brand Category",
+      "reqd": 1,
+      "description": "A brand can belong to more than one category — e.g. Apple spans mobiles, tablets, and laptops"
+    }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "read": 1 },
+    { "role": "Guest", "read": 1 }
+  ],
+  "sort_field": "brand_name",
+  "sort_order": "ASC"
+}

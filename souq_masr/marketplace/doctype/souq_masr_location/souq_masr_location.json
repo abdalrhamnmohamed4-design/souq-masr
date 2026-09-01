@@ -1,0 +1,57 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Location",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "is_tree": 1,
+  "autoname": "field:location_key",
+  "naming_rule": "By fieldname",
+  "engine": "InnoDB",
+  "creation": "2025-01-01 00:00:00.000000",
+  "modified": "2025-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["location_key", "location_name", "location_type", "parent_souq_masr_location", "is_group"],
+  "fields": [
+    {
+      "fieldname": "location_key",
+      "label": "Location Key",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "unique": 1,
+      "description": "Matches the mobile app's LocationNode.id (e.g. 'gov-القاهرة', 'city-مدينة-نصر')"
+    },
+    { "fieldname": "location_name", "label": "Name", "fieldtype": "Data", "reqd": 1, "in_list_view": 1 },
+    {
+      "fieldname": "location_type",
+      "label": "Type",
+      "fieldtype": "Select",
+      "options": "Governorate\nCity\nDistrict\nArea",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "parent_souq_masr_location",
+      "label": "Parent Location",
+      "fieldtype": "Link",
+      "options": "Souq Masr Location"
+    },
+    { "fieldname": "is_group", "label": "Is Group", "fieldtype": "Check", "default": "0" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "read": 1 },
+    { "role": "Guest", "read": 1 }
+  ],
+  "sort_field": "location_name",
+  "sort_order": "ASC"
+}

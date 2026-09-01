@@ -1,0 +1,72 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Listing Attribute",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "creation": "2025-01-01 00:00:00.000000",
+  "modified": "2025-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "attr_key",
+    "label",
+    "field_type",
+    "required",
+    "filterable",
+    "searchable",
+    "options",
+    "unit",
+    "min_value",
+    "max_value"
+  ],
+  "fields": [
+    {
+      "fieldname": "attr_key",
+      "label": "Key",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Stable machine key, e.g. 'storage', 'mileage' — matches the mobile app's postDraft.attributes[key]"
+    },
+    {
+      "fieldname": "label",
+      "label": "Label (Arabic)",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "field_type",
+      "label": "Field Type",
+      "fieldtype": "Select",
+      "options": "Text\nNumber\nSelect\nMultiselect\nBoolean\nDate\nYear\nLocation",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    { "fieldname": "required", "label": "Required", "fieldtype": "Check", "default": "0" },
+    { "fieldname": "filterable", "label": "Filterable", "fieldtype": "Check", "default": "1" },
+    { "fieldname": "searchable", "label": "Searchable", "fieldtype": "Check", "default": "0" },
+    {
+      "fieldname": "options",
+      "label": "Options (one per line, for Select/Multiselect)",
+      "fieldtype": "Small Text",
+      "depends_on": "eval:in_list(['Select','Multiselect'], doc.field_type)"
+    },
+    { "fieldname": "unit", "label": "Unit", "fieldtype": "Data", "description": "e.g. كم, م², %" },
+    { "fieldname": "min_value", "label": "Min", "fieldtype": "Float", "depends_on": "eval:doc.field_type=='Number'" },
+    { "fieldname": "max_value", "label": "Max", "fieldtype": "Float", "depends_on": "eval:doc.field_type=='Number'" }
+  ],
+  "permissions": [],
+  "sort_field": "modified",
+  "sort_order": "ASC",
+  "row_format": "Dynamic"
+}
