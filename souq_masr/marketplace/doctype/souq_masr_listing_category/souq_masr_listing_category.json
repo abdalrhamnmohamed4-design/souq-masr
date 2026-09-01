@@ -31,7 +31,10 @@
     "has_brands",
     "allowed_conditions",
     "allowed_selling_types",
-    "fields"
+    "fields",
+    "lft",
+    "rgt",
+    "old_parent"
   ],
   "fields": [
     {
@@ -71,6 +74,35 @@
       "fieldtype": "Table",
       "options": "Souq Masr Listing Attribute",
       "description": "The exact per-category dynamic fields the mobile post-ad wizard renders for this category"
+    },
+    {
+      "fieldname": "lft",
+      "fieldtype": "Int",
+      "hidden": 1,
+      "label": "lft",
+      "no_copy": 1,
+      "print_hide": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "rgt",
+      "fieldtype": "Int",
+      "hidden": 1,
+      "label": "rgt",
+      "no_copy": 1,
+      "print_hide": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "old_parent",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "ignore_user_permissions": 1,
+      "label": "old_parent",
+      "no_copy": 1,
+      "options": "Souq Masr Listing Category",
+      "print_hide": 1,
+      "report_hide": 1
     }
   ],
   "permissions": [
