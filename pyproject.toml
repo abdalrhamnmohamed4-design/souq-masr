@@ -15,11 +15,15 @@ build-backend = "flit_core.buildapi"
 # to a bench — without this section Frappe Cloud has no way to check this app
 # is actually compatible with the Frappe/ERPNext version on that bench, and
 # app-add can fail or silently install against an incompatible framework.
-# Pinned to what ERPNext's own version-16 branch declares for itself
-# (frappe/erpnext pyproject.toml on the version-16 branch, checked directly —
-# not guessed): frappe = ">=16.21.0,<17.0.0". See DEPLOYMENT.md for the
-# version-15 alternative and why v16 is the recommendation.
+#
+# Set to the version-15 range (DEPLOYMENT.md's documented alternative to v16):
+# the live Hostinger VPS deploy (bare-metal, Ubuntu 22.04) uses v15 because
+# ERPNext version-16 itself requires Python >=3.14, which isn't available on
+# 22.04 by default — v15 needs only Python >=3.10, matching the box's actual
+# python3.10. If a future bench moves to v16 (e.g. on Frappe Cloud, which
+# provisions its own Python per version), change this back to
+# ">=16.21.0,<17.0.0" first.
 [tool.bench.frappe-dependencies]
-frappe = ">=16.21.0,<17.0.0"
+frappe = ">=15.111.0,<16.0.0"
 
 [tool.bench.dev-dependencies]
