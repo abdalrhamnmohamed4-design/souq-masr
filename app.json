@@ -1,0 +1,67 @@
+{
+  "expo": {
+    "name": "سوق مصر",
+    "slug": "souq-masr",
+    "scheme": "souqmasr",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "primaryColor": "#F4511E",
+    "ios": {
+      "supportsTablet": true,
+      "buildNumber": "1"
+    },
+    "android": {
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#C62828",
+          "image": "./assets/splash-logo.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#B71C1C",
+            "image": "./assets/splash-logo.png",
+            "imageWidth": 220,
+            "resizeMode": "contain"
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "سوق مصر محتاج يوصل لصورك عشان تضيفها لإعلانك أو صورة التوثيق."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#F4511E"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "سوق مصر محتاج موقعك عشان يحدّدلك مدينتك تلقائي ويقرّب الإعلانات منك."
+        }
+      ]
+    ]
+  }
+}

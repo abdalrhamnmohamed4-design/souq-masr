@@ -1,0 +1,33 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Brand Category",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 1,
+  "engine": "InnoDB",
+  "creation": "2025-01-01 00:00:00.000000",
+  "modified": "2025-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["souq_masr_listing_category"],
+  "fields": [
+    {
+      "fieldname": "souq_masr_listing_category",
+      "label": "Category",
+      "fieldtype": "Link",
+      "options": "Souq Masr Listing Category",
+      "reqd": 1,
+      "in_list_view": 1
+    }
+  ],
+  "permissions": [],
+  "sort_field": "modified",
+  "sort_order": "ASC",
+  "row_format": "Dynamic"
+}

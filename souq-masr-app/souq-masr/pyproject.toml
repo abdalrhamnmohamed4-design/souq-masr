@@ -1,0 +1,25 @@
+[project]
+name = "souq_masr"
+authors = [{ name = "Souq Masr" }]
+description = "Marketplace, Jobs, and Services layer for ERPNext — custom Frappe app"
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+# Required by Frappe Cloud's validate_app_dependencies() when this app is added
+# to a bench — without this section Frappe Cloud has no way to check this app
+# is actually compatible with the Frappe/ERPNext version on that bench, and
+# app-add can fail or silently install against an incompatible framework.
+# Pinned to what ERPNext's own version-16 branch declares for itself
+# (frappe/erpnext pyproject.toml on the version-16 branch, checked directly —
+# not guessed): frappe = ">=16.21.0,<17.0.0". See DEPLOYMENT.md for the
+# version-15 alternative and why v16 is the recommendation.
+[tool.bench.frappe-dependencies]
+frappe = ">=16.21.0,<17.0.0"
+
+[tool.bench.dev-dependencies]

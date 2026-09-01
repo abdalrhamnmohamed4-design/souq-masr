@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+/*
+ * توكنز هوية "سوق مصر" — نفس ألوان تطبيق الموبايل (theme/tokens.ts) مترجمة
+ * لمتغيرات CSS، عشان الداشبورد يحس إنه نفس المنتج مش أداة تانية غريبة،
+ * بس بتركيبة مناسبة لشاشة ويب عريضة كثيفة بيانات (جداول/كروت/رسوم بيانية).
+ */
+@theme {
+  --font-display: 'Cairo', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, sans-serif;
+
+  --color-ink: #0f1a2e;
+  --color-ink-2: #3a4557;
+  --color-ink-3: #8a93a3;
+  --color-signal: #f4511e;
+  --color-signal-2: #d93f10;
+  --color-signal-wash: #fff0ea;
+  --color-gold: #e0a106;
+  --color-gold-wash: #fff8e4;
+  --color-verify: #0e9469;
+  --color-verify-wash: #e6f5ef;
+  --color-danger: #d2372a;
+  --color-danger-wash: #fcedeb;
+  --color-info: #2563a8;
+  --color-info-wash: #e8f1fb;
+  --color-paper: #f4f4f1;
+  --color-surface: #ffffff;
+  --color-surface-2: #fafaf8;
+  --color-line: #e2e2dc;
+  --color-line-2: #eeeee9;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-body);
+  }
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+  }
+  * {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .input {
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 1px solid var(--color-line);
+    background: var(--color-paper);
+    padding: 0.55rem 0.75rem;
+    font-size: 0.875rem;
+    color: var(--color-ink);
+    outline: none;
+  }
+  .input:focus {
+    border-color: var(--color-signal);
+  }
+}
+
+/* شريط تمرير أنحف للجداول العريضة */
+.thin-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+}

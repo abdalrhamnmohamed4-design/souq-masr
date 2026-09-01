@@ -1,0 +1,41 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Model",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2025-01-01 00:00:00.000000",
+  "modified": "2025-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["brand", "model_name"],
+  "fields": [
+    {
+      "fieldname": "brand",
+      "label": "Brand",
+      "fieldtype": "Link",
+      "options": "Souq Masr Brand",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    { "fieldname": "model_name", "label": "Model Name", "fieldtype": "Data", "reqd": 1, "in_list_view": 1 }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "read": 1 },
+    { "role": "Guest", "read": 1 }
+  ],
+  "sort_field": "model_name",
+  "sort_order": "ASC"
+}

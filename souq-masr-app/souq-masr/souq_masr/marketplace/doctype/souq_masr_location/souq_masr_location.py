@@ -1,0 +1,8 @@
+# Copyright (c) 2025, Souq Masr and contributors
+# For license information, please see license.txt
+
+from frappe.utils.nestedset import NestedSet
+
+
+class SouqMasrLocation(NestedSet):
+	nsm_parent_field = "parent_souq_masr_location"
