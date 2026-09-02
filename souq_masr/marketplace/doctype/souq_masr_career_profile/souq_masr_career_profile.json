@@ -1,0 +1,51 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Career Profile",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "full_name", "phone", "email", "current_job_title", "desired_job_title",
+    "years_experience", "career_level", "expected_salary_min", "expected_salary_max",
+    "preferred_work_types_json", "resume_file",
+    "visibility", "show_phone", "show_email", "show_cv"
+  ],
+  "fields": [
+    { "fieldname": "full_name", "label": "Full Name", "fieldtype": "Data" },
+    { "fieldname": "phone", "label": "Phone", "fieldtype": "Data" },
+    { "fieldname": "email", "label": "Email", "fieldtype": "Data" },
+    { "fieldname": "current_job_title", "label": "Current Job Title", "fieldtype": "Data" },
+    { "fieldname": "desired_job_title", "label": "Desired Job Title", "fieldtype": "Data" },
+    { "fieldname": "years_experience", "label": "Years Experience", "fieldtype": "Int" },
+    { "fieldname": "career_level", "label": "Career Level", "fieldtype": "Select", "options": "\nintern\nentry\njunior\nmid\nsenior\nmanager\ndirector\nexecutive" },
+    { "fieldname": "expected_salary_min", "label": "Expected Salary Min", "fieldtype": "Int" },
+    { "fieldname": "expected_salary_max", "label": "Expected Salary Max", "fieldtype": "Int" },
+    { "fieldname": "preferred_work_types_json", "label": "Preferred Work Types (JSON)", "fieldtype": "Long Text", "description": "JSON array of WorkType strings — same flat-string-list exception as Souq Masr Job's *_json fields." },
+    { "fieldname": "resume_file", "label": "Resume File", "fieldtype": "Attach", "description": "is_private=1 — never served via a raw URL, same handling as Souq Masr Job Application's resume_file." },
+    { "fieldname": "visibility", "label": "Visibility", "fieldtype": "Select", "options": "public\nemployers_only\nprivate", "default": "employers_only" },
+    { "fieldname": "show_phone", "label": "Show Phone", "fieldtype": "Check" },
+    { "fieldname": "show_email", "label": "Show Email", "fieldtype": "Check" },
+    { "fieldname": "show_cv", "label": "Show CV", "fieldtype": "Check", "default": "1" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "write": 1, "delete": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
