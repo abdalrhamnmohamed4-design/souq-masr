@@ -120,25 +120,37 @@ wallet remain unbuilt — none of those domains were touched this slice.
 ## Phase 2E — Chat
 
 **Update (Slice 4):** real conversations, messages (with server
-timestamps), and call signaling/state are now **built, live-tested, and
+timestamps), and call signaling/state are **built, live-tested, and
 wired** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B Slice 4
 section for the full detail, live HTTP results, and two backend bugs
 found and fixed (GET-requests-don't-commit; site-wide timezone
-misconfiguration) plus a phone-privacy leak fixed. **Actual VoIP audio is
-still a gap** — deliberately not built this slice (untestable in this
-environment); a concrete provider recommendation (LiveKit, self-hosted)
-and integration shape are documented in the same report section for a
-future slice.
+misconfiguration) plus a phone-privacy leak fixed.
+
+**Update (Slice 4B):** actual voice audio infrastructure is now **built
+and independently verified everywhere this environment can verify it** —
+self-hosted LiveKit (systemd, no Docker, no Redis — single-node),
+`get_rtc_token` (audio-only-scoped, room-authorized, live HTTP-tested
+including decoding real JWT payloads), the full mobile RTC integration
+(`app/call/[id].tsx` rewritten onto real `@livekit/react-native`), EAS
+dev-build config, and one real pre-existing bug found and fixed (missing
+iOS ATS / Android cleartext exception — would have blocked *every*
+existing feature on a real device, not just calling). **Still NO-GO**:
+the actual two-device audio test itself has not run yet — it needs a
+physical-device `eas build` only the requester can perform. See
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B Slice 4B section §13-15
+for the exact test steps and the explicit NO-GO reasoning.
 
 | Feature | Status | Auth | Priority |
 |---|---|---|---|
 | Start/list/read conversations | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.chat.{start_conversation,get_my_conversations,get_conversation}` — normalized `Souq Masr Conversation`/`Souq Masr Message` DocTypes, create-only permissions (two-participant membership enforced explicitly in Python, not via DocType perms). `app/(tabs)/messages.tsx`, `app/chat/[id].tsx`, `app/detail/[id].tsx` all real-backend-aware for real listings. | Auth | Done |
 | Send/receive messages (text + image) | ✅ **Built, live-tested, wired.** `send_message`/`send_image_message`, real server `creation` timestamp on every message (see the timezone-fix note above), date-grouped display on mobile (اليوم/أمس/full date, Arabic or English per active language). | Auth | Done |
-| Real-time delivery | ⏳ Not wired — polling (2.5-5s depending on screen) used instead this slice. Frappe's `realtime`/socketio confirmed running on the VPS (`BACKEND_PRODUCTION_READINESS.md` §10) but not connected to the mobile client. | Auth | Medium |
-| Call signaling (start/accept/decline/end, ring-timeout, duration, call-event timeline) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.calls.*` — `Souq Masr Call` DocType, caller/callee always server-derived from conversation membership (never client-supplied). `app/call/[id].tsx` fully rewritten off the old fake-timer simulation onto real polling of this backend. | Auth | Done |
-| Actual VoIP audio (WebRTC) | ⛔ **Not built.** Architecture documented (LiveKit, self-hosted) in the integration report — needs an EAS dev-client/custom build (native module), out of reach of Expo Go and this environment's testing capability. | Auth | High (next) |
-| Background/incoming-call support (CallKit/ConnectionService + push) | ⛔ **Not built.** Needs a VoIP push channel (APNs VoIP push + FCM) and a paid Apple Developer entitlement, neither present yet. Foreground-only incoming-call detection (polling while the chat screen is open) is built as a disclosed partial substitute. | Auth | Medium (after audio) |
-| Sold-confirmation flow (`types/sale.ts`, already fully designed client-side) | ⏳ Not built — still fully mock, unextended to real conversations this slice (a real listing's mark-sold path already works via My Ads directly, from Slice 2) | Auth | Medium |
+| Real-time delivery | ⏳ Not wired — polling (2.5-5s depending on screen; stops entirely once a voice call is actually connected, see Slice 4B) used instead. Frappe's `realtime`/socketio confirmed running on the VPS (`BACKEND_PRODUCTION_READINESS.md` §10) but not connected to the mobile client. | Auth | Medium |
+| Call signaling (start/accept/decline/end, ring-timeout, duration, call-event timeline) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.calls.*` — `Souq Masr Call` DocType, caller/callee always server-derived from conversation membership (never client-supplied). | Auth | Done |
+| Voice audio infrastructure (LiveKit server, token endpoint, mobile RTC integration, audio-only enforcement) | ✅ **Built and verified** — self-hosted LiveKit reachable from outside its own network (real STUN response, not just an open port), token endpoint live-tested end-to-end (JWT payload decoded and asserted: room, identity, `canPublishSources: ["microphone"]` only, TTL), room capped at `max_participants=2` verified directly on the running server, `tsc`/`expo export`/a real `expo prebuild` all clean. | Auth | Done (infra) |
+| Actual two-device voice audio | ⛔ **Not yet tested — NO-GO.** Everything up to this point is complete; only a physical-device `eas build` + real call between two devices remains, and only the requester can run it (see integration report §13-14 for the exact steps and build command). | Auth | **Blocking — next action is the requester's** |
+| Background/incoming-call support (CallKit/ConnectionService + push) | ⛔ **Not built.** Needs a VoIP push channel (APNs VoIP push + FCM) and a paid Apple Developer entitlement, neither present yet. Foreground-only incoming-call detection (polling while the chat screen is open) is built as a disclosed partial substitute — unchanged since Slice 4. | Auth | Medium (after the two-device test) |
+| TLS/domain for the public LiveKit endpoint | ⏳ Still pending — DuckDNS subdomain + token requested from the requester, not yet received. Does not block the two-device test (media is DTLS-SRTP-encrypted regardless); does mean a temporary, explicitly-flagged `NSAllowsArbitraryLoads`/`usesCleartextTraffic` exception is in `app.json` and must be narrowed once TLS is live. | — | High (before any production release) |
+| Sold-confirmation flow (`types/sale.ts`, already fully designed client-side) | ⏳ Not built — still fully mock, unextended to real conversations (a real listing's mark-sold path already works via My Ads directly, from Slice 2) | Auth | Medium |
 
 ## Phase 2F — Listing creation / edit / images
 

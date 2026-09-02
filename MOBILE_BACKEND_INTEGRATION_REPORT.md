@@ -2298,3 +2298,470 @@ slice's own requirement that surfaced it) and the seller-phone type
 widening in §9. No mock data deleted globally — `store/useAppStore.ts`'s
 local `conversations` array and the Sale Confirmation Flow remain fully
 intact and functional for mock listings.
+
+---
+
+# Phase 2B Slice 4B — Real In-App Voice Calling (LiveKit)
+
+**Scope, exactly:** make the "free in-app call" choice actually carry
+real, two-way voice audio, using self-hosted LiveKit. Everything Slice 4
+already built (chat, timestamps, call data model/signaling/security,
+phone-dialer fallback) is reused unchanged. **Voice only** — no video
+track is ever published, no camera permission is ever requested on
+Android, and no camera API is ever called from the client on either
+platform (see §5 for the one unavoidable iOS static-linking nuance).
+
+**Per the request's own stop condition:** this section reports what was
+built and what was verified via real HTTP and real server-side
+inspection. It does **not** claim GO for actual two-device audio — that
+test has not happened yet, because it requires a physical device build
+(`eas build`) that only the requester can run and verify, per the
+explicit division of labor agreed before this slice started (see the
+"Two-device test" and "Native build path" decisions earlier in this
+conversation). Everything up to that final gate is complete and tested
+as thoroughly as this environment allows; §13 says exactly what remains.
+
+## 1. Audit of the existing Slice 4 implementation (before writing anything)
+
+Re-read `souq_masr/api/v1/calls.py`, `souq_masr/api/v1/chat.py`,
+`services/callService.ts`, `services/chatService.ts`, `app/call/[id].tsx`,
+`app/chat/[id].tsx`, `components/CallChoiceSheet.tsx`, and the `Souq Masr
+Call`/`Souq Masr Conversation`/`Souq Masr Message` DocTypes. Confirmed
+already correct and reused without modification: the full call state
+machine (Ringing/Active/Ended/Declined/Missed/Cancelled/Failed),
+server-derived caller/callee, ring-timeout auto-resolution, call-event
+timeline messages, the two-choice call sheet, phone-privacy rules, and
+the chat screen's foreground incoming-call polling. **Nothing here was
+rebuilt.** The only gap was the audio transport itself — nothing
+LiveKit-related existed anywhere in the repository before this slice.
+
+## 2. LiveKit architecture review
+
+Verified directly against this project's actual versions (not assumed):
+
+| Requirement | Finding |
+|---|---|
+| Expo Go | **Confirmed incompatible** — LiveKit's React Native SDK requires native modules (`@livekit/react-native-webrtc`) that Expo Go cannot load. A development build is mandatory; this was never in question, just confirmed. |
+| Expo SDK | Project is on SDK 54. `@config-plugins/react-native-webrtc` is version-locked to SDK majors (`13.0.0` ↔ SDK 54, `14.0.0` ↔ SDK 55, `15.x` ↔ SDK 56) — installing `latest` (15.0.2) failed with a peer-dependency conflict demanding SDK ≥56; pinned to `13.0.0` instead, which resolved cleanly. |
+| Config plugins | Required, and confirmed working after one real fix: `@livekit/react-native-expo-plugin`'s own package does not declare `@expo/config-plugins` as an installable dependency, and this project's `@expo/config-plugins` copies were all nested (under `expo`, `@expo/cli`, `expo-splash-screen`, etc.) rather than hoisted to the top level — so the plugin's bare `require('@expo/config-plugins')` failed to resolve, breaking `expo export`/`expo prebuild` entirely. Fixed by adding `@expo/config-plugins@54.0.5` as an explicit top-level devDependency. Verified fixed via a real `expo export` run (succeeded, 2024 modules) and a real local `expo prebuild --platform android` run (succeeded — see §9 for why that generated output was discarded rather than committed). |
+| `app.json`/`app.config.*` | Project uses static `app.json` only (no `app.config.js`) — changes made directly there: two new plugin entries, `android.blockedPermissions`, and (see §5) an App Transport Security / cleartext-traffic fix. |
+| EAS | No `eas.json`, no linked EAS project, not logged into the Expo CLI — all confirmed before starting. `eas.json` created this slice (development/preview/production profiles); the EAS project itself and its credentials are the requester's own, created on first `eas build` run, per the agreed division of labor. |
+| iOS entitlements | None required specifically for LiveKit voice calling itself (no VoIP push, no CallKit — see §7). The App Transport Security fix in §5 is unrelated to LiveKit specifically; it's a pre-existing gap this audit surfaced. |
+| Android permissions | `RECORD_AUDIO` (needed, requested), `CAMERA` (added by `react-native-webrtc`'s own manifest merge, explicitly blocked — see §5). |
+
+**Deviation from the originally documented recommendation, deliberately:**
+the Slice 4 report suggested a companion coturn TURN server. LiveKit
+server has had a **built-in TURN server** for some time — confirmed by
+reading the actual config schema shipped with the installed
+`livekit-server` binary (`turn.enabled`, `turn.udp_port`) — so a separate
+coturn process was never deployed. One fewer moving part, same
+capability, verified working (see §3).
+
+## 3. Self-hosted LiveKit — deployment
+
+**VPS capacity check (same box as Frappe, 187.7.19.136):** 2 vCPU, 7.8GB
+RAM, 90GB free disk, idle load average ~0.06 at deploy time. LiveKit's
+own sizing guidance puts a single-node deployment handling "up to a few
+hundred concurrent participants" comfortably within this — for a 1:1
+voice-only marketplace-chat feature, this VPS has substantial headroom.
+
+**No Docker.** Installed the official `livekit-server` static binary
+directly via the upstream install script (`v1.13.6`) and run it as a
+native `systemd` unit (`livekit-server.service`, `User=frappe`,
+`Restart=on-failure`) — matches this VPS's existing bare-metal-Frappe
+operational style rather than introducing a container runtime for one
+binary.
+
+**No Redis.** LiveKit's own documentation confirms Redis is required
+only once you run more than one `livekit-server` node, for cross-node
+room-state coordination — a single node (this deployment; the server log
+itself printed `"using single-node routing"` on startup, confirmed live)
+works correctly without it. Added only if this ever needs to scale past
+one node.
+
+**Config** (`/opt/livekit/config.yaml` on the VPS, real secrets — never
+committed; a redacted template is checked in at
+`infra/livekit/config.yaml.template`):
+
+```yaml
+port: 7880
+bind_addresses: ["0.0.0.0"]
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+keys:
+  <api_key>: <api_secret>   # generated via openssl rand -hex 12 / -hex 32
+turn:
+  enabled: true
+  udp_port: 3478
+```
+
+**Ports opened / verified reachable from outside the VPS (not just
+"ufw is inactive" — actually tested from a separate network):**
+
+| Port | Purpose | Verified |
+|---|---|---|
+| 7880/TCP | Signaling (HTTP/WS) | ✅ confirmed open (external TCP probe succeeded) |
+| 7881/TCP | WebRTC-over-TCP fallback | ✅ confirmed open |
+| 3478/UDP | Built-in TURN | ✅ confirmed **working**, not just open — a real STUN Binding Request sent from outside the VPS's network got a real STUN Binding Success Response back (`0x0101` header), proving the UDP path is genuinely alive end-to-end, not merely unfiltered |
+| 30000-40000/UDP | TURN relay range (LiveKit's default) | Not individually probed — same host, same absence of firewall rules as the confirmed ports above |
+| 50000-50100/UDP | Direct ICE/media range (narrowed from the commonly-suggested 50000-60000; sufficient for this app's concurrency) | Not individually probed, same reasoning |
+
+The full media-port range's reachability is conclusively settled by the
+two-device test itself (§13) — if ICE genuinely can't traverse, the call
+UI will show `failed`, not a false `connected`.
+
+**Room security, verified live (not just by reading the token):** every
+`start_call` explicitly creates the LiveKit room via `RoomServiceClient`
+with `max_participants=2` — confirmed directly on the running server
+(`list_rooms` showed `max_participants=2` on every room created this
+way, matching the call id exactly), not inferred from the request code
+alone.
+
+**No TLS yet.** The domain/SSL step from the earlier discussion is still
+pending from the requester (DuckDNS subdomain + token requested, not yet
+received). `livekit_ws_url` is currently set to the plain
+`ws://187.7.19.136:7880` — this does **not** block the two-device test
+(WebRTC media itself is always DTLS-SRTP-encrypted regardless of the
+signaling channel's own transport security; only the signaling messages
+and the initial token exchange travel in cleartext without TLS). It does
+mean: (a) the connection is vulnerable to signaling-level tampering on a
+hostile network, and (b) — the more concrete, load-bearing issue —
+plain `ws://`/`http://` needed an explicit iOS/Android cleartext
+exception to be reachable from a real device build at all (§5). Both are
+flagged as a follow-up hardening step, not silently worked around.
+Because `livekit_ws_url` is read from server config at token-issue time
+(never baked into the mobile build), flipping it to `wss://` later needs
+**zero mobile rebuild** — only an nginx server block + certbot once the
+domain is live.
+
+## 4. Backend token endpoint
+
+`souq_masr/api/v1/calls.py`'s new `get_rtc_token(call_id)`:
+
+- Re-uses the exact same authorization check as every other endpoint in
+  the file (`user in (doc.caller, doc.callee)`) — a token is never
+  issued to anyone but a real participant of that specific call.
+- **Room = the call's own id** (`CALL-#####`), always — never a
+  client-supplied room name.
+- **Audio-only at the token layer, not just the UI layer:**
+  `VideoGrants(can_publish_sources=["microphone"])`. This is enforced by
+  the LiveKit *server*, not the client — even a modified mobile client
+  presenting this token could not publish a camera or screen-share
+  track, because the token itself never grants that permission.
+- TTL: 600 seconds (`LIVEKIT_TOKEN_TTL_SECONDS`), short-lived per the
+  request. Safe against disconnecting an in-progress call: LiveKit only
+  validates the JWT at initial room-join, not for the life of an
+  already-established connection.
+- Rejects: Guest (401/403), a non-participant (403 — verified against a
+  real third user, not just reasoned about), an invalid `call_id` (404),
+  and a call that isn't Ringing/Active (a already-Ended call cannot mint
+  a new token).
+- `livekit-api` (the official Python SDK, `v1.2.1`) added as a real
+  dependency of the `souq_masr` app (`pyproject.toml`), not just
+  pip-installed ad hoc on the VPS — survives a future
+  reinstall/`bench setup requirements`.
+
+**Live HTTP test results** (buyer/seller/stranger, real listing/
+conversation/call, real signin tokens):
+
+```
+call started: CALL-00085
+
+=== 1. Caller (buyer) gets a valid token ===
+buyer token payload: {"video": {"roomJoin": true, "room": "CALL-00085",
+"canPublish": true, "canSubscribe": true, "canPublishData": true,
+"canPublishSources": ["microphone"]}, "sub":
+"201077770001@phone.souqmasr.local", ...}
+token ttl = 600s
+
+=== 2. Callee (seller) also gets a valid token for the SAME room ===
+seller identity: 201077770002@phone.souqmasr.local
+
+=== 3. Stranger (not a participant) is rejected with 403 ===
+status=403
+
+=== 4. Guest (unauthenticated) is rejected ===
+status=403
+
+=== 5. Invalid call_id is rejected with 404 ===
+status=404
+
+=== 6. Room was actually created on the LiveKit server with max_participants=2 ===
+(verified directly against the running server — see §3)
+
+=== 7. After the call ends, no more tokens can be issued for it ===
+status=417 (ValidationError)
+
+RTC TOKEN TESTS PASSED
+```
+
+Every payload assertion in that suite decodes the **actual JWT** (not
+just trusts the HTTP 200) and checks `room`, `canPublishSources`, `sub`
+(identity), and the `exp`/`nbf` gap for the TTL — not a superficial
+status-code check.
+
+## 5. Mobile: dependencies, permissions, and one real pre-existing bug found
+
+**Packages installed** (`package.json`): `@livekit/react-native`,
+`@livekit/react-native-webrtc`, `@livekit/react-native-expo-plugin`,
+`@config-plugins/react-native-webrtc@13.0.0` (pinned, see §2),
+`livekit-client`, `expo-dev-client`, plus `@expo/config-plugins@54.0.5`
+as a devDependency (the resolver fix from §2).
+
+**Voice-only enforcement, platform by platform:**
+- **Android:** `android.blockedPermissions: ["android.permission.CAMERA"]`
+  added to `app.json`. `react-native-webrtc`'s own config plugin
+  unconditionally adds the `CAMERA` permission to the manifest (it
+  supports both audio and video use cases); `blockedPermissions` strips
+  it back out at manifest-merge time. Verified by reading the actual
+  plugin source (`@config-plugins/react-native-webrtc`'s
+  `withWebRTC.js`) rather than assuming Expo's merge behavior. Result:
+  the built Android app genuinely never declares camera access.
+- **iOS:** the same underlying library requires `NSCameraUsageDescription`
+  to exist in `Info.plist` for the linked WebRTC framework to build at
+  all (confirmed by reading the plugin's own `withPermissions.js` — it
+  always writes this key, with no option to omit it). This is a real,
+  disclosed platform-level limit, not something worked around: the key's
+  *string* is present (customized to say "سوق مصر مش بيستخدم الكاميرا
+  خالص — مكالمات صوتية بس" / "not used at all — voice calls only"), but
+  **no runtime camera API is ever called from this app's code**, so iOS
+  never actually shows the user a camera-permission prompt — the
+  permission is never *requested* in the way that matters (no prompt, no
+  access), even though the static Info.plist entry exists for the
+  reason above.
+- No camera track is ever created or published anywhere in
+  `app/call/[id].tsx` — `video={false}` explicitly on `<LiveKitRoom>`,
+  and no code path calls `setCameraEnabled`.
+
+**A real, pre-existing bug found and fixed while verifying this build
+would even run on a physical device:** this project's Frappe API calls
+have always used plain `http://187.7.19.136` (no domain, no HTTPS — a
+known, disclosed limitation since the VPS was first deployed). That was
+never actually exercised on a real device before — every previous slice
+was only verified via `tsc`/`expo export`/live HTTP from a dev machine,
+never a running mobile app. iOS's App Transport Security **blocks
+plaintext HTTP/WS connections by default**; without an exception, the
+very first real-device run of this app would have failed to reach the
+backend at all — for every existing feature, not just this slice's new
+LiveKit connection. Fixed with a narrowly-scoped, explicitly-temporary
+exception:
+
+```json
+"ios": { "infoPlist": { "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": true } } },
+"android": { "usesCleartextTraffic": true }
+```
+
+**This must be reverted once the domain + TLS work (§3) is done** — it's
+appropriate for a `development`/`internal` EAS build talking to a
+plaintext-only backend, not for a public production release. Flagged
+here and in `MOBILE_BACKEND_GAPS.md`, not left as a silent permanent
+setting.
+
+## 6. Mobile: the call screen (`app/call/[id].tsx`, rewritten again)
+
+Slice 4's version polled `getCall` and rendered ringing/ended states
+honestly with no audio at all. This version keeps that same honest
+backend-status handling for everything **before** a real connection
+exists, and adds a second, real layer once the backend says the call is
+`Active`:
+
+- `lib/callUiState.ts` (new): a single pure function
+  (`computeCallUiState`) merges the backend's `Souq Masr Call.status`
+  with LiveKit's own `ConnectionState` into the exact nine states the
+  request specifies (`idle`/`outgoing_call`/`incoming_call`/`connecting`/
+  `connected`/`ended`/`rejected`/`missed`/`failed`). **The UI only ever
+  shows `connected` when LiveKit's own `ConnectionState.Connected` is
+  true** — never merely because the backend record says `Active`.
+- Backend polling (2.5s, same as Slice 4) runs **only** until a real RTC
+  connection exists; once connected, it stops (§10 of this request:
+  "do not send unnecessary polling requests while a LiveKit call is
+  active"). From that point, "the other party hung up" is detected from
+  a real LiveKit room event (`useRemoteParticipants()` dropping to
+  zero), not from continued polling.
+- `AudioSession.startAudioSession()`/`stopAudioSession()` bracket the
+  screen's mount/unmount lifecycle, per LiveKit's own documented
+  pattern.
+- Mute: `localParticipant.setMicrophoneEnabled()`, driven by the real
+  `useLocalParticipant()` hook — not a local boolean that controls
+  nothing.
+- Speaker/earpiece: `AudioSession.selectAudioOutput()`
+  (`'speaker'`/`'earpiece'` on Android, `'force_speaker'`/`'default'` on
+  iOS, per the SDK's own platform split) — wrapped in a try/catch that
+  silently no-ops on a device that doesn't support output selection,
+  matching the request's own "where supported" wording rather than
+  crashing or lying about the state.
+- Duration: a real ticking display computed from the moment
+  `ConnectionState.Connected` actually becomes true — cosmetic/live-only;
+  the **stored** duration is still computed server-side at `end_call`
+  from `answered_at`/`ended_at`, unchanged from Slice 4.
+- Microphone permission failure: surfaced from
+  `useLocalParticipant().lastMicrophoneError` (a real SDK-reported
+  error, not inferred) with a "no microphone permission — open Settings"
+  banner wired to `Linking.openSettings()`.
+- `services/rtcService.ts` (new): the one function that calls
+  `get_rtc_token`, typed, adapted to camelCase like every other service
+  in this codebase.
+- `registerGlobals()` (LiveKit's required one-time WebRTC JS globals
+  setup) added once at the top of `app/_layout.tsx`, before any other
+  import that could touch LiveKit.
+
+**Not rebuilt:** the two-choice call sheet
+(`components/CallChoiceSheet.tsx`), the chat screen's incoming-call
+polling/banner, the phone-privacy-gated native-dialer fallback — all
+reused exactly as Slice 4 left them. "Free in-app call" now leads to a
+screen that actually carries audio instead of one that discloses it
+doesn't.
+
+## 7. Incoming call — unchanged from Slice 4, still foreground-only
+
+No push notifications, no CallKit, no ConnectionService were added this
+slice — this was explicitly out of scope for "make the free call
+actually carry audio" and remains a documented, disclosed gap (see
+`MOBILE_BACKEND_GAPS.md`). The foreground detection built in Slice 4
+(polling `get_active_call_for_conversation` while the chat screen is
+open) is what the two-device test in §13 will exercise — both devices
+need their chat screen open (or already past accept) for the callee to
+see the incoming call, exactly as before. This is disclosed, not implied
+to be full background support.
+
+## 8. Call recording — unchanged, still none
+
+Nothing in this slice stores, buffers, or proxies an audio stream to
+disk or to any third party. LiveKit's own recording (Egress) was never
+configured, deployed, or referenced anywhere in this setup. The only
+persisted call data remains the same metadata fields as Slice 4
+(caller/callee/conversation/status/timestamps/duration).
+
+## 9. Verification performed
+
+- `tsc --noEmit`: clean (zero errors) after every round of the changes
+  above.
+- `npx expo export --platform ios`: clean, 2024 modules (up from 1837
+  before this slice, consistent with the added LiveKit code actually
+  being included in the bundle graph, not silently excluded).
+- `npx expo prebuild --platform android --no-install`: run once, purely
+  to prove the config plugins (§2, §5) actually apply without crashing —
+  succeeded. The generated `android/` directory and the prebuild's
+  side-effects on `app.json`/`package.json` (auto-injected Android
+  package name, duplicated permission lists, `expo run:android` script
+  rewrite) were **reverted/discarded**, not committed — this project
+  stays pure managed-workflow; EAS Build runs its own prebuild in the
+  cloud. One real, useful thing this throwaway prebuild surfaced: no
+  `android.package`/`ios.bundleIdentifier` exists yet anywhere in this
+  project — `eas build` will prompt for one on first run (§14, a genuine
+  manual step, not something to invent on the requester's behalf).
+- Backend: the full live HTTP suite in §4, plus a re-run of the entire
+  Slice 4 chat/call test suite (unaffected — zero new failures).
+- **Not yet done, and cannot be done from here:** connecting two real
+  LiveKit clients and verifying actual two-way audio. That is §13's job,
+  and it requires the physical-device build only the requester can run.
+
+## 10. Production safety
+
+- `frappe-bench.conf` (the bench-managed nginx config for the Frappe
+  site) was **not** touched, edited, or regenerated this slice.
+- `livekit-server` runs as its own isolated `systemd` unit, its own
+  config file (`/opt/livekit/`), no shared process, no shared Redis, no
+  shared port with anything Frappe uses.
+- The Frappe web/worker processes were restarted only for the
+  `calls.py` deployment (standard for any endpoint change, same as every
+  prior slice) — never for LiveKit itself, which needed no Frappe
+  restart to come up.
+- `supervisorctl status` confirmed all existing Frappe processes healthy
+  before and after every restart in this slice.
+
+## 11. Failure-handling coverage (coded; two-device-testable, not yet tested live)
+
+Coded and reachable via the state machine in §6, but only verifiable
+with real audio on real devices (§13), not from this environment:
+caller cancels before answer (→ `Cancelled`, handled), receiver declines
+(→ `Declined`, handled, tested at the backend level in Slice 4), receiver
+doesn't answer (→ `Missed` after 45s, backend-tested with a real sleep in
+Slice 4), microphone permission denied (→ `lastMicrophoneError` banner,
+coded, not yet triggered on a real device), token expiry mid-call (→ no
+effect on an already-connected session, by LiveKit's own design, per
+§4), unauthorized room access (→ 403, backend-tested in §4).
+**Network disconnect/reconnect and the actual "both parties can hear
+each other" outcome cannot be verified without §13.**
+
+## 12. What's still not built (disclosed, not silently skipped)
+
+- Actual two-device audio verification (§13 — the whole reason this
+  section exists at NO-GO, see §15).
+- TLS/domain for the public LiveKit endpoint (§3 — still pending from
+  the requester's own DuckDNS step).
+- Background/incoming-call support via CallKit/ConnectionService + VoIP
+  push (§7 — unchanged from Slice 4, not attempted this slice either).
+- `NSAllowsArbitraryLoads`/`usesCleartextTraffic` (§5) must be narrowed
+  or removed once the backend has real TLS — currently appropriate only
+  for an internal development build.
+- `android.package`/`ios.bundleIdentifier` are not set — `eas build`
+  will prompt for these; they were not invented on the requester's
+  behalf since they're effectively permanent once chosen (§14).
+
+## 13. Two-device test — instructions for the requester (not yet run)
+
+This is the final gate, and per the request's own rule, cannot be
+converted to GO by anything short of this actually happening:
+
+1. Run the EAS build command in §14 below (Android first is recommended
+   — no Apple Developer account needed to sideload an APK; iOS needs a
+   paid account for a real-device dev build's signing).
+2. Install the resulting build on two physical devices, sign in as two
+   different real users (different phone numbers).
+3. Device A: open Device B's user's listing → chat → tap the call button
+   → "📞 مكالمة مجانية داخل التطبيق".
+4. Device B: the chat screen (must be open) shows the incoming-call
+   banner (§7 — foreground only) → accept.
+5. Verify on both devices: both microphones work, both can hear each
+   other, mute works, speaker/earpiece toggle works, duration ticks
+   correctly, ending the call from either side ends it for both.
+6. Repeat with B declining, then with B not answering at all (verify the
+   45-second miss-timeout from Slice 4 still fires correctly with real
+   RTC involved).
+7. Restart both apps, open the conversation, and verify the call-history
+   timeline entries (§ from Slice 4) are still correct and persisted.
+8. Retest "📱 اتصال هاتفي عادي" opens the native dialer with the
+   privacy-gated number, unchanged from Slice 4.
+
+## 14. EAS build command
+
+```bash
+npx eas login                 # first time only, requester's own account
+npx eas build --profile development --platform android
+# once an Apple Developer account is available:
+npx eas build --profile development --platform ios
+```
+
+On first run, `eas build` will prompt to create the EAS project (writes
+`extra.eas.projectId` into `app.json`) and to choose an Android
+`package`/iOS `bundleIdentifier`, since neither exists yet (§9/§12).
+These are effectively permanent once set — pick deliberately, e.g.
+`com.souqmasr.app`.
+
+## 15. Decision
+
+# NO-GO — for actual two-device voice audio, per the request's own explicit rule
+# Infrastructure and code: complete and independently verified wherever this environment allows
+
+Every layer that can be verified without a physical device has been:
+self-hosted LiveKit is running and genuinely reachable (a real STUN
+response from outside the VPS's network, not just an open port), the
+token endpoint is live-tested end-to-end including decoding the actual
+JWT payload for room/identity/audio-only-grant/TTL correctness, room
+security is verified directly against the running LiveKit server (not
+inferred), `tsc`/`expo export`/a real `expo prebuild` all pass, and a
+real pre-existing bug (missing ATS/cleartext exception, which would have
+blocked *every* existing feature on a real device, not just this one)
+was found and fixed as a direct result of preparing for this test.
+
+**What remains is exactly one thing this environment cannot do:** connect
+two real LiveKit clients on two physical devices and confirm actual
+two-way audio. Per the request's own §17, that gap alone keeps this at
+NO-GO — "do not convert NO-GO into GO because the code compiles." §13
+above is the exact sequence to run it; report back the actual result
+(pass, partial, or specific failure) and this section will be updated to
+GO or to document whatever the real test surfaces.

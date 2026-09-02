@@ -1,6 +1,15 @@
 // لازم يكون أول import في الملف عشان react-native-gesture-handler يشتغل صح.
 import 'react-native-gesture-handler';
 
+// Phase 2B Slice 4B — لازم تتنادى مرة واحدة بس، قبل أي استخدام لـLiveKit
+// في أي شاشة، عشان تسجّل الـglobals اللي WebRTC محتاجاها في JS (نفس
+// اللي LiveKit's Expo quickstart بيطلبه بالظبط). صوت بس هنا فعليًا —
+// الـregistration دي مستوى transport عام، مش هي اللي بتحدد صوت/فيديو
+// (ده بيتحدد في app/call/[id].tsx وtoken الباك إند، شوف calls.py's
+// get_rtc_token).
+import { registerGlobals } from '@livekit/react-native';
+registerGlobals();
+
 import {
   Cairo_600SemiBold,
   Cairo_700Bold,

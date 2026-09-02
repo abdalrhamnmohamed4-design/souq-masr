@@ -1,0 +1,42 @@
+# Souq Masr — self-hosted LiveKit config template (Phase 2B Slice 4B, voice-only).
+#
+# This is a TEMPLATE, not the live config — the real file lives only on
+# the VPS at /opt/livekit/config.yaml with real key/secret values filled
+# in, and is never committed to git (same secrets-stay-out-of-git
+# convention as this repo's .env). The matching key/secret pair is also
+# stored in the Frappe site's config (`livekit_api_key`/`livekit_api_secret`
+# via `bench set-config`), which is how souq_masr/api/v1/calls.py's
+# get_rtc_token signs tokens that this server will accept.
+#
+# Single-node deployment — no Redis. LiveKit's own docs confirm Redis is
+# only required once you run more than one livekit-server node for
+# shared room-state coordination; a single node (this deployment) works
+# correctly without it, so it's deliberately omitted rather than added
+# just because it appeared in an earlier architecture sketch.
+#
+# Voice-only is NOT enforced here — LiveKit has no per-deployment video
+# kill-switch. It's enforced where it actually belongs: server-issued
+# token grants (can_publish_sources=["microphone"] only, see calls.py's
+# get_rtc_token) and the mobile client never calling setCameraEnabled or
+# publishing a video track. This file only carries transport settings.
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+keys:
+  # REPLACE — generated once via `openssl rand -hex 12` (key) / `openssl
+  # rand -hex 32` (secret); the real values live only on the VPS and in
+  # the Frappe site config, never here.
+  __LIVEKIT_API_KEY__: __LIVEKIT_API_SECRET__
+turn:
+  enabled: true
+  udp_port: 3478
+  # turns: (TURN-over-TLS on 443) needs the public domain/cert — added
+  # once DNS is in place, see MOBILE_BACKEND_INTEGRATION_REPORT.md's
+  # Phase 2B Slice 4B section for the exact nginx + certbot steps. Plain
+  # UDP TURN (3478) covers the large majority of real-world networks;
+  # TLS fallback is a documented hardening step, not silently skipped.
