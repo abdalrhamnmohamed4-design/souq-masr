@@ -150,17 +150,23 @@ def get_governorates():
 	return frappe.get_all(
 		"Souq Masr Location",
 		filters={"location_type": "Governorate"},
-		fields=["location_key as id", "location_name as name"],
+		fields=["location_key as id", "location_name as name", "is_group"],
 		order_by="location_name asc",
 	)
 
 
 @frappe.whitelist(allow_guest=True)
 def get_location_children(parent: str):
+	# is_group مضافة هنا (زي get_children's بتاع التصنيفات بالظبط) عشان
+	# العميل يعرف "الابن ده ليه أبناء ولا leaf؟" من نفس النداء، من غير
+	# ما يحتاج نداء إضافي لكل عنصر ظاهر على الشاشة (نفس التحسين اللي
+	# اتعمل في category/[id].tsx's Phase 2A). القيمة نفسها متحسوبة وقت
+	# الزرع (seed_taxonomy.py's _seed_locations()) حسب النوع
+	# (governorate/city=1، area=0) — مش عدّ فعلي للأبناء وقت كل نداء.
 	return frappe.get_all(
 		"Souq Masr Location",
 		filters={"parent_souq_masr_location": parent},
-		fields=["location_key as id", "location_name as name", "location_type"],
+		fields=["location_key as id", "location_name as name", "location_type", "is_group"],
 		order_by="location_name asc",
 	)
 
