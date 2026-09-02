@@ -55,10 +55,10 @@ def _assert_candidate_or_employer(doc, user):
 	frappe.throw(frappe._("You are not a participant in this application"), frappe.PermissionError)
 
 
-def _serialize(doc, viewer):
+def _serialize(doc, viewer, job_info=None):
 	is_candidate = viewer == doc.owner
 	is_employer = viewer == _job_owner(doc.job)
-	return {
+	out = {
 		"id": doc.name,
 		"job": doc.job,
 		"full_name": doc.full_name,
@@ -70,6 +70,33 @@ def _serialize(doc, viewer):
 		"applied_at": str(doc.creation),
 		"is_mine": is_candidate,
 	}
+	if job_info is not None:
+		info = job_info.get(doc.job)
+		# الوظيفة ممكن تتحذف فعليًا (delete_job's force=1) وطلب التقديم
+		# يفضل موجود — job_title=None هو الإشارة لـapplications.tsx إنه
+		# يعرض "وظيفة محذوفة" بدل ما يفشل الشاشة كلها.
+		out["job_title"] = info["title"] if info else None
+		out["company_id"] = info["company"] if info else None
+		out["company_name"] = info["company_name"] if info else None
+	return out
+
+
+def _batch_job_info(job_ids):
+	# applications.tsx كانت بتعمل client-side join (useAllJobs + useAllCompanies)
+	# لكل صف — N+1-shaped. هنا بنجيب كل الوظائف والشركات المطلوبة في
+	# استعلامين واحدين بس، مهما كان عدد الطلبات في الصفحة.
+	job_ids = [j for j in set(job_ids) if j]
+	if not job_ids:
+		return {}
+	jobs = frappe.get_all("Souq Masr Job", filters={"name": ["in", job_ids]}, fields=["name", "title", "company"])
+	company_ids = [j.company for j in jobs if j.company]
+	companies = {}
+	if company_ids:
+		companies = {
+			c.name: c.name1
+			for c in frappe.get_all("Souq Masr Company", filters={"name": ["in", company_ids]}, fields=["name", "name1"])
+		}
+	return {j.name: {"title": j.title, "company": j.company, "company_name": companies.get(j.company)} for j in jobs}
 
 
 @frappe.whitelist()
@@ -129,7 +156,9 @@ def get_my_applications(status=None, page=1, limit=PAGE_SIZE_DEFAULT):
 		filters["status"] = status
 	total = frappe.db.count("Souq Masr Job Application", filters)
 	rows = frappe.get_all("Souq Masr Job Application", filters=filters, fields=["name"], order_by="creation desc", limit_start=offset, limit_page_length=limit)
-	items = [_serialize(frappe.get_doc("Souq Masr Job Application", r.name), user) for r in rows]
+	docs = [frappe.get_doc("Souq Masr Job Application", r.name) for r in rows]
+	job_info = _batch_job_info([d.job for d in docs])
+	items = [_serialize(d, user, job_info=job_info) for d in docs]
 	return {"items": items, "total": total, "page": page, "limit": limit}
 
 
