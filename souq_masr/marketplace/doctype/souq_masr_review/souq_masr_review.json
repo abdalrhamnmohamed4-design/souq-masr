@@ -1,0 +1,55 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Review",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["seller", "rating", "comment"],
+  "fields": [
+    {
+      "fieldname": "seller",
+      "label": "Seller",
+      "fieldtype": "Link",
+      "options": "User",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "The reviewed seller (a real Frappe User, same as Souq Masr Listing.owner). owner is Frappe's standard field — the reviewer. One row per (owner, seller) pair, upserted by souq_masr.api.v1.reviews.submit_review, not inserted fresh each time."
+    },
+    {
+      "fieldname": "rating",
+      "label": "Rating",
+      "fieldtype": "Int",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "1-5, validated both in submit_review and in this DocType's own validate() (defense in depth, same pattern as Souq Masr Listing's price validation)."
+    },
+    {
+      "fieldname": "comment",
+      "label": "Comment",
+      "fieldtype": "Small Text",
+      "description": "Optional free-text comment, matches the mobile rating sheet's optional comment field."
+    }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "write": 1, "delete": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
