@@ -199,4 +199,8 @@ export type LocationNode = {
   name: string;
   type: LocationType;
   parentId: string | null;
+  /** ليها أبناء ولا لأ — نفس فكرة Category.isGroup بالظبط، جاي من
+   * Frappe's is_group على get_governorates/get_location_children بس
+   * (Phase 2A). مش موجود لما المصدر mock. */
+  isGroup?: boolean;
 };

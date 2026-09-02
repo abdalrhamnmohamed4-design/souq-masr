@@ -8,20 +8,24 @@
  * في الرئيسية (app/(tabs)/home.tsx، لفلترة "قريب منك" بس). مبقاش جزء من
  * onboarding إجباري — المستخدم مبيتسألش عن موقعه إلا وهو بينشر إعلان أو
  * لو هو نفسه فتح الفلتر ده بإرادته.
+ *
+ * Phase 2A (آخر خطوة): بيقرأ من الباك إند الحقيقي بالكامل دلوقتي —
+ * services/taxonomyService.ts's getGovernorates/getLocationChildren/
+ * searchLocations/getLocation/getLocationPath. الاتنين الأخيرين كانوا
+ * فجوة موثّقة في MOBILE_BACKEND_GAPS.md #1/#2 لحد ما endpoints get_location
+ * وget_location_path اتضافوا فعليًا في الباك إند خصيصًا لفتح الشاشة دي.
+ * قرار "الابن ده ليه أبناء ولا leaf؟" بقى بيتاخد من is_group الراجع فعليًا
+ * (نفس تحسين app/category/[id].tsx بالظبط) بدل نداء إضافي لكل عنصر.
  */
 import * as Location from 'expo-location';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
+import { combineApiResultList, useApiResult } from '@/hooks/useApiResult';
 import { useT } from '@/i18n';
-import {
-  getGovernorates,
-  getLocation,
-  getLocationChildren,
-  locationPathLabel,
-  searchLocations,
-} from '@/mock/taxonomy/locations';
 import type { LocationNode } from '@/mock/taxonomy/types';
+import { getGovernorates, getLocation, getLocationChildren, searchLocations } from '@/services/taxonomyService';
 import { useTheme } from '@/theme/ThemeProvider';
 import { Icon } from './Icon';
 
@@ -59,7 +63,7 @@ const EN_GOV_ALIASES: Record<string, string> = {
   ismailia: 'gov-الإسماعيلية',
 };
 
-async function detectCurrentGovernorate(): Promise<string | null> {
+async function detectCurrentGovernorate(governorates: LocationNode[]): Promise<string | null> {
   const { status } = await Location.requestForegroundPermissionsAsync();
   if (status !== 'granted') return null;
   const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
@@ -68,7 +72,7 @@ async function detectCurrentGovernorate(): Promise<string | null> {
   if (!place) return null;
   const candidates = [place.region, place.subregion, place.city].filter(Boolean) as string[];
   for (const cand of candidates) {
-    const arabicMatch = getGovernorates().find((g) => g.name === cand || cand.includes(g.name) || g.name.includes(cand));
+    const arabicMatch = governorates.find((g) => g.name === cand || cand.includes(g.name) || g.name.includes(cand));
     if (arabicMatch) return arabicMatch.id;
     const enMatch = EN_GOV_ALIASES[cand.toLowerCase().trim()];
     if (enMatch) return enMatch;
@@ -90,17 +94,57 @@ export function LocationPicker({ visible, onClose, onSelect, initialLocationId, 
   const resolvedTitle = title ?? t('locationPicker.defaultTitle');
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
-  const [browseId, setBrowseId] = useState<string | null>(() => {
-    const initial = initialLocationId ? getLocation(initialLocationId) : undefined;
-    return initial?.parentId ?? null;
-  });
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [browseId, setBrowseId] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
 
-  const browseNode = browseId ? getLocation(browseId) : undefined;
-  const items: LocationNode[] = browseId === null ? getGovernorates() : getLocationChildren(browseId);
-  const searchResults = query.trim() ? searchLocations(query) : [];
+  // debounce بسيط (250ms) — نداء API حقيقي على كل ضغطة حرف مختلف تمامًا
+  // عن بحث محلي متزامن كان مجاني فعليًا؛ ده أقل تغيير ممكن يمنع spam
+  // من غير ما يغيّر شكل تجربة البحث نفسها.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [query]);
 
-  const popularGovs = useMemo(() => POPULAR_GOV_IDS.map((id) => getLocation(id)).filter(Boolean) as LocationNode[], []);
+  // initialLocationId: بنحل الأب بتاعه (عشان نبدأ التصفّح من نفس مستواه)
+  // بشكل غير متزامن دلوقتي — قبل كده كان بحث محلي فوري وقت أول render.
+  useEffect(() => {
+    let cancelled = false;
+    if (!initialLocationId) return;
+    getLocation(initialLocationId).then((r) => {
+      if (cancelled) return;
+      if (r.status === 'success') setBrowseId(r.data.parentId);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialLocationId, visible]);
+
+  const { state: browseNodeState } = useApiResult(
+    () => (browseId ? getLocation(browseId) : Promise.resolve({ status: 'success' as const, data: null })),
+    [browseId],
+  );
+  const browseNode = browseNodeState.kind === 'success' ? browseNodeState.data : null;
+
+  const { state: itemsState, refetch: refetchItems } = useApiResult<LocationNode[]>(
+    () => (browseId === null ? getGovernorates() : getLocationChildren(browseId)),
+    [browseId],
+    (data) => data.length === 0,
+  );
+
+  const { state: searchState } = useApiResult<LocationNode[]>(
+    () => (debouncedQuery ? searchLocations(debouncedQuery) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [debouncedQuery],
+    (data) => debouncedQuery.length > 0 && data.length === 0,
+  );
+
+  const { state: popularGovsState } = useApiResult(
+    () => Promise.all(POPULAR_GOV_IDS.map((id) => getLocation(id))).then(combineApiResultList),
+    [],
+  );
+  const popularGovs = popularGovsState.kind === 'success' ? popularGovsState.data : [];
+  const allGovsForGeo = useMemo(() => (itemsState.kind === 'success' && browseId === null ? itemsState.data : popularGovs), [itemsState, browseId, popularGovs]);
 
   const select = (id: string) => {
     onSelect(id);
@@ -109,8 +153,7 @@ export function LocationPicker({ visible, onClose, onSelect, initialLocationId, 
   };
 
   const drillIn = (node: LocationNode) => {
-    const hasKids = getLocationChildren(node.id).length > 0;
-    if (hasKids) setBrowseId(node.id);
+    if (node.isGroup) setBrowseId(node.id);
     else select(node.id);
   };
 
@@ -118,7 +161,7 @@ export function LocationPicker({ visible, onClose, onSelect, initialLocationId, 
 
   const useCurrentLocation = async () => {
     setLocating(true);
-    const govId = await detectCurrentGovernorate();
+    const govId = await detectCurrentGovernorate(allGovsForGeo);
     setLocating(false);
     if (govId) select(govId);
   };
@@ -163,12 +206,10 @@ export function LocationPicker({ visible, onClose, onSelect, initialLocationId, 
 
           <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.s5, paddingBottom: 20 }}>
             {query.trim() ? (
-              searchResults.length === 0 ? (
-                <Text style={{ fontSize: 12, color: colors.ink3, textAlign: 'center', paddingVertical: 30 }}>{t('locationPicker.noResults')}</Text>
+              searchState.kind === 'success' ? (
+                searchState.data.map((loc) => <Row key={loc.id} label={loc.name} onPress={() => select(loc.id)} />)
               ) : (
-                searchResults.map((loc) => (
-                  <Row key={loc.id} label={loc.name} sub={locationPathLabel(loc.id)} onPress={() => select(loc.id)} />
-                ))
+                <ApiStateView state={searchState} />
               )
             ) : (
               <>
@@ -183,24 +224,32 @@ export function LocationPicker({ visible, onClose, onSelect, initialLocationId, 
                   </Text>
                 </Pressable>
 
-                {browseId === null ? (
-                  <>
-                    <SectionLabel text={t('locationPicker.popular')} />
-                    {popularGovs.map((g) => (
-                      <Row key={g.id} label={g.name} onPress={() => drillIn(g)} chevron />
-                    ))}
-                    <SectionLabel text={t('locationPicker.allGovernorates')} />
-                    {items.map((loc) => (
-                      <Row key={loc.id} label={loc.name} onPress={() => drillIn(loc)} chevron />
-                    ))}
-                  </>
+                {itemsState.kind === 'success' ? (
+                  browseId === null ? (
+                    <>
+                      {popularGovsState.kind === 'success' ? (
+                        <>
+                          <SectionLabel text={t('locationPicker.popular')} />
+                          {popularGovs.map((g) => (
+                            <Row key={g.id} label={g.name} onPress={() => drillIn(g)} chevron />
+                          ))}
+                        </>
+                      ) : null}
+                      <SectionLabel text={t('locationPicker.allGovernorates')} />
+                      {itemsState.data.map((loc) => (
+                        <Row key={loc.id} label={loc.name} onPress={() => drillIn(loc)} chevron />
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      <Row label={`${browseNode?.name ?? ''} — ${t('locationPicker.allAreas')}`} bold onPress={() => browseId && select(browseId)} />
+                      {itemsState.data.map((loc) => (
+                        <Row key={loc.id} label={loc.name} onPress={() => drillIn(loc)} chevron={!!loc.isGroup} />
+                      ))}
+                    </>
+                  )
                 ) : (
-                  <>
-                    <Row label={`${browseNode?.name} — ${t('locationPicker.allAreas')}`} bold onPress={() => browseId && select(browseId)} />
-                    {items.map((loc) => (
-                      <Row key={loc.id} label={loc.name} onPress={() => drillIn(loc)} chevron={getLocationChildren(loc.id).length > 0} />
-                    ))}
-                  </>
+                  <ApiStateView state={itemsState} onRetry={refetchItems} />
                 )}
               </>
             )}

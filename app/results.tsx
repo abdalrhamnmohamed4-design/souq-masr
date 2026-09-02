@@ -11,13 +11,24 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
 import { RowCard } from '@/components/listing/RowCard';
 import { Button } from '@/components/primitives/Button';
+import { useApiResult } from '@/hooks/useApiResult';
 import { useT } from '@/i18n';
 import { useAppStore, useDiscoverableListings } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
-import { categoryLabel, fieldLabel, getAllDescendantIds, getCategory, getPath } from '@/mock/taxonomy/categories';
+// categoryLabel/fieldLabel: منتقيات تسمية بس بتشتغل على كائن Category/
+// CategoryField اتجاب فعلًا (مش نداء بيانات) — فاضلين هنا. getAllDescendantIds
+// وgetPath(l.categoryKey) هنا لسه من mock عمدًا: بيتستخدموا في نطاق فلترة
+// الإعلانات المحلية (Listings لسه mock بالكامل، Phase 2B) مش لعرض بيانات
+// تصنيف حقيقية — نفس القرار المتخذ في home.tsx بالظبط (معرّفات التصنيف
+// مطابقة 1:1 بين mock والباك إند الحقيقي بالتصميم). getCategory وحدها
+// بقت من الباك إند الحقيقي (services/taxonomyService.ts) — هي اللي فعليًا
+// بتحدد اسم/حقول التصنيف المعروضة.
+import { categoryLabel, fieldLabel, getAllDescendantIds, getPath } from '@/mock/taxonomy/categories';
+import { getCategory } from '@/services/taxonomyService';
 import { matchesQuery } from '@/lib/search';
 import { useRequireAuth } from '@/lib/auth';
 import { CONDITION_LABELS, conditionLabel, type CategoryField, type Condition } from '@/mock/taxonomy/types';
@@ -52,8 +63,16 @@ export default function Results() {
   const addSavedSearch = useAppStore((s) => s.addSavedSearch);
   const requireAuth = useRequireAuth();
 
-  const category = categoryId ? getCategory(categoryId) : undefined;
-  const categoryDisplayName = category ? categoryLabel(category, language) : t('results.allAds');
+  const { state: categoryState, refetch: refetchCategory } = useApiResult(
+    () => (categoryId ? getCategory(categoryId) : Promise.resolve({ status: 'success' as const, data: null })),
+    [categoryId],
+  );
+  const category = categoryState.kind === 'success' ? categoryState.data ?? undefined : undefined;
+  const categoryDisplayName = categoryId
+    ? category
+      ? categoryLabel(category, language)
+      : t('common.loading')
+    : t('results.allAds');
   const filterableFields: CategoryField[] = category?.fields.filter((f) => f.filterable && f.type === 'select') ?? [];
 
   const scopedListings = useMemo(() => {
@@ -122,57 +141,65 @@ export default function Results() {
         <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 18, color: colors.ink }}>{categoryDisplayName}</Text>
       </View>
 
-      <View style={{ flexDirection: 'row', gap: spacing.s2, paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>
-        <View style={{ flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r2, paddingVertical: 4, paddingHorizontal: spacing.s3, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Icon name="search" size={16} color={colors.ink3} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder={t('results.searchIn', { category: categoryDisplayName })}
-            placeholderTextColor={colors.ink3}
-            style={{ flex: 1, fontSize: 12.5, color: colors.ink, paddingVertical: 8 }}
-            returnKeyType="search"
-          />
-          {query ? (
-            <Pressable onPress={() => setQuery('')}>
-              <Icon name="x" size={14} color={colors.ink3} />
-            </Pressable>
-          ) : null}
+      {categoryId && categoryState.kind !== 'success' ? (
+        <View style={{ flex: 1, justifyContent: 'center' }}>
+          <ApiStateView state={categoryState} onRetry={refetchCategory} />
         </View>
-        <Pressable onPress={() => setSheetOpen(true)} style={{ backgroundColor: brandDark, borderRadius: radius.r2, paddingHorizontal: spacing.s3, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-          <Icon name="sliders" size={14} color="#fff" />
-          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{t('results.filter')}</Text>
-          {activeCount > 0 ? (
-            <View style={{ backgroundColor: colors.signal, borderRadius: 999, width: 16, height: 16, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: '#fff', fontSize: 9 }}>{activeCount}</Text>
+      ) : (
+        <>
+          <View style={{ flexDirection: 'row', gap: spacing.s2, paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>
+            <View style={{ flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r2, paddingVertical: 4, paddingHorizontal: spacing.s3, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Icon name="search" size={16} color={colors.ink3} />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder={t('results.searchIn', { category: categoryDisplayName })}
+                placeholderTextColor={colors.ink3}
+                style={{ flex: 1, fontSize: 12.5, color: colors.ink, paddingVertical: 8 }}
+                returnKeyType="search"
+              />
+              {query ? (
+                <Pressable onPress={() => setQuery('')}>
+                  <Icon name="x" size={14} color={colors.ink3} />
+                </Pressable>
+              ) : null}
             </View>
-          ) : null}
-        </Pressable>
-      </View>
-
-      {activeChips.length > 0 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingHorizontal: spacing.s5, paddingBottom: spacing.s3, alignItems: 'flex-start' }}>
-          {activeChips.map((f) => (
-            <Pressable key={f.label} onPress={f.onRemove} style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.signalWash, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10 }}>
-              <Text style={{ fontSize: 10, fontWeight: '700', color: colors.signal2 }}>{f.label}</Text>
-              <Icon name="x" size={12} color={colors.signal2} />
+            <Pressable onPress={() => setSheetOpen(true)} style={{ backgroundColor: brandDark, borderRadius: radius.r2, paddingHorizontal: spacing.s3, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Icon name="sliders" size={14} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{t('results.filter')}</Text>
+              {activeCount > 0 ? (
+                <View style={{ backgroundColor: colors.signal, borderRadius: 999, width: 16, height: 16, alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: '#fff', fontSize: 9 }}>{activeCount}</Text>
+                </View>
+              ) : null}
             </Pressable>
-          ))}
-        </ScrollView>
-      ) : null}
+          </View>
 
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>
-        <Text style={{ fontSize: 11, color: colors.ink3 }}>{t('results.adsCount', { count: results.length })}</Text>
-        <Text style={{ fontSize: 11, color: colors.ink3 }}>{t(SORT_TKEY[sort] as Parameters<typeof t>[0])}</Text>
-      </View>
+          {activeChips.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingHorizontal: spacing.s5, paddingBottom: spacing.s3, alignItems: 'flex-start' }}>
+              {activeChips.map((f) => (
+                <Pressable key={f.label} onPress={f.onRemove} style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.signalWash, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10 }}>
+                  <Text style={{ fontSize: 10, fontWeight: '700', color: colors.signal2 }}>{f.label}</Text>
+                  <Icon name="x" size={12} color={colors.signal2} />
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
-        {results.length === 0 ? (
-          <Text style={{ textAlign: 'center', color: colors.ink3, fontSize: 12.5, paddingTop: 40 }}>{t('results.noMatches')}</Text>
-        ) : (
-          results.map((l) => <RowCard key={l.id} listing={l} />)
-        )}
-      </ScrollView>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>
+            <Text style={{ fontSize: 11, color: colors.ink3 }}>{t('results.adsCount', { count: results.length })}</Text>
+            <Text style={{ fontSize: 11, color: colors.ink3 }}>{t(SORT_TKEY[sort] as Parameters<typeof t>[0])}</Text>
+          </View>
+
+          <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+            {results.length === 0 ? (
+              <Text style={{ textAlign: 'center', color: colors.ink3, fontSize: 12.5, paddingTop: 40 }}>{t('results.noMatches')}</Text>
+            ) : (
+              results.map((l) => <RowCard key={l.id} listing={l} />)
+            )}
+          </ScrollView>
+        </>
+      )}
 
       <Modal visible={sheetOpen} transparent animationType="slide" onRequestClose={() => setSheetOpen(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(15,26,46,.5)', justifyContent: 'flex-end' }} onPress={() => setSheetOpen(false)}>

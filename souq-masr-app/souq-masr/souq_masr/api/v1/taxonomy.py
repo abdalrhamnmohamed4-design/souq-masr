@@ -98,7 +98,15 @@ def search_categories(q: str, limit=30):
 	limit is cast explicitly rather than relying on the `int` type hint alone —
 	query-string params always arrive as strings, and whether Frappe's automatic
 	whitelisted-method type coercion reliably covers every case isn't something
-	verifiable without a live instance, so this doesn't depend on it either way."""
+	verifiable without a live instance, so this doesn't depend on it either way.
+
+	fields مطابقة لـget_children()'s بالظبط (بما فيها is_group/sort_order/
+	has_brands) — مش بس id/name/icon زي أول نسخة من الدالة دي. سبب الإضافة:
+	app/post/index.tsx's Phase 2A migration بيستخدم نفس selectLeaf() لنتيجة
+	بحث زي ما بيستخدمها لعنصر تصفّح عادي — من غير is_group هنا، أي نتيجة
+	بحث كانت هتتحسب leaf دايمًا (mobile's adaptCategorySummary's `!!c.is_group`
+	بيرجع false على undefined)، يعني اختيار نتيجة بحث لتصنيف "أب" كان هيسجّله
+	كتصنيف نهائي غلط بدل ما يفتح فروعه."""
 	q = (q or "").strip()
 	if not q:
 		return []
@@ -106,7 +114,7 @@ def search_categories(q: str, limit=30):
 	return frappe.get_all(
 		"Souq Masr Listing Category",
 		or_filters=[["name_ar", "like", f"%{q}%"], ["name_en", "like", f"%{q}%"]],
-		fields=["category_key as id", "name_ar", "name_en", "icon"],
+		fields=["category_key as id", "name_ar", "name_en", "icon", "sort_order", "is_group", "has_brands"],
 		limit=limit,
 	)
 

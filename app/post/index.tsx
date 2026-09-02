@@ -14,6 +14,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
 import { BrandLogo } from '@/components/BrandLogo';
 import { Icon, type IconName } from '@/components/Icon';
 import { useAuthGuard } from '@/components/AuthGuard';
@@ -21,10 +22,16 @@ import { useRequireOnline } from '@/lib/connectivityGuard';
 import { Button } from '@/components/primitives/Button';
 import { Chip } from '@/components/primitives/Chip';
 import { FormField } from '@/components/primitives/FormField';
-import { getBrandsForCategory } from '@/mock/taxonomy/brands';
-import { getCategory, getChildren, getPath } from '@/mock/taxonomy/categories';
-import { getModelsForBrand } from '@/mock/taxonomy/models';
-import { getLocation, locationPathLabel } from '@/mock/taxonomy/locations';
+import { useApiResult } from '@/hooks/useApiResult';
+import {
+  getBrandsForCategory,
+  getCategory,
+  getChildren,
+  getLocationPath,
+  getModelsForBrand,
+  getPath,
+  searchCategories,
+} from '@/services/taxonomyService';
 import { LocationPicker } from '@/components/LocationPicker';
 import {
   CONDITION_LABELS,
@@ -87,7 +94,22 @@ export default function PostAd() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editId, editingListing, hydrated]);
 
-  const category = postDraft.categoryKey ? getCategory(postDraft.categoryKey) : undefined;
+  // Phase 2A: تفاصيل التصنيف الكاملة (fields/hasBrands/allowedConditions...)
+  // بقت بتيجي من الباك إند الحقيقي عبر getCategory غير المتزامنة، مش
+  // نداء متزامن من mock/taxonomy/categories.ts. لسه undefined لحد ما
+  // الطلب يخلص (أو لو مفيش categoryKey أصلًا).
+  const categoryKey = postDraft.categoryKey;
+  const { state: categoryState, refetch: refetchCategory } = useApiResult(
+    () => (categoryKey ? getCategory(categoryKey) : Promise.resolve({ status: 'success' as const, data: null })),
+    [categoryKey],
+  );
+  const category = categoryState.kind === 'success' ? categoryState.data ?? undefined : undefined;
+  // لسه بيتحمّل تفاصيل التصنيف (أو فشل التحميل) — بنمنع "التالي" لحد ما
+  // يتحل، عشان steps[] تحسيبها (hasBrands/fields.length) يبقى مبني على
+  // بيانات حقيقية مش على undefined مؤقت.
+  const categoryPending = !!categoryKey && categoryState.kind === 'loading';
+  const categoryFailed = !!categoryKey && categoryState.kind !== 'loading' && categoryState.kind !== 'success';
+
   // خطوة المقاسات/الألوان بتظهر بس لحساب تجاري وف تصنيف بيدعم مقاسات
   // (PART "Business/Product Listing" — فردي بيبيع قطعة واحدة زي ما هي).
   const supportsVariants = !!business && !!category?.fields.some((f) => f.key === 'size');
@@ -111,8 +133,27 @@ export default function PostAd() {
   const goBack = () => (stepIndex === 0 ? router.back() : setStepIndex((i) => i - 1));
   const goNext = () => setStepIndex((i) => Math.min(steps.length - 1, i + 1));
 
+  // اسم المحافظة الخاص بالموقع المختار — بيتحل بشكل غير متزامن من
+  // get_location_path الحقيقي (بديل locationPathLabel(id).split('، ')[0]
+  // المتزامنة القديمة) عشان يبقى جاهز وقت publish() من غير ما نحوّل
+  // publish() نفسها لدالة async.
+  const [locationCity, setLocationCity] = useState('');
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!postDraft.locationId) {
+      setLocationCity('');
+      return undefined;
+    }
+    getLocationPath(postDraft.locationId).then((r) => {
+      if (!cancelled && r.status === 'success' && r.data.length > 0) setLocationCity(r.data[0].name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [postDraft.locationId]);
+
   const canNext = (() => {
-    if (stepKey === 'category') return !!postDraft.categoryKey;
+    if (stepKey === 'category') return !!postDraft.categoryKey && !categoryPending && !categoryFailed;
     if (stepKey === 'brand') return !!postDraft.brandId;
     if (stepKey === 'attributes') {
       const required = category?.fields.filter((f) => f.required) ?? [];
@@ -120,7 +161,7 @@ export default function PostAd() {
     }
     if (stepKey === 'variants') return true; // اختياري — لو مفيش variants بيتباع كقطعة واحدة عادية
     if (stepKey === 'details') return postDraft.title.trim().length > 5 && (postDraft.priceType === 'free' || postDraft.priceType === 'contact' || postDraft.price.trim().length > 0);
-    if (stepKey === 'location') return !!postDraft.locationId;
+    if (stepKey === 'location') return !!postDraft.locationId && !!locationCity;
     return true;
   })();
 
@@ -131,7 +172,7 @@ export default function PostAd() {
     const patch: Omit<Listing, 'id' | 'sellerId' | 'postedAt' | 'views' | 'isFeatured' | 'isVerifiedSeller'> = {
       title: postDraft.title,
       price: priceNum,
-      city: postDraft.locationId ? locationPathLabel(postDraft.locationId).split('، ')[0] : '',
+      city: locationCity,
       condition: postDraft.condition ? CONDITION_LABELS[postDraft.condition] : '',
       categoryKey: category.id,
       thumb: 'a',
@@ -205,6 +246,12 @@ export default function PostAd() {
         <Text style={{ fontSize: 11, color: colors.ink3, lineHeight: 18 }}>{STEP_DESCS[stepKey]}</Text>
       </View>
 
+      {categoryState.kind !== 'success' && categoryState.kind !== 'loading' && categoryKey ? (
+        <View style={{ paddingHorizontal: spacing.s5, marginBottom: spacing.s4 }}>
+          <ApiStateView state={categoryState} onRetry={refetchCategory} />
+        </View>
+      ) : null}
+
       <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.s5, paddingBottom: 130 + insets.bottom }}>
         {stepKey === 'category' ? <CategoryStep /> : null}
         {stepKey === 'brand' && category ? <BrandStep category={category} /> : null}
@@ -254,17 +301,38 @@ function CategoryStep() {
   const { postDraft, setPostDraft } = useAppStore();
   const [parentId, setParentId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  const allCategories = useMemo(() => getChildren(null).flatMap((c) => [c, ...flattenChildren(c.id)]), []);
-  const searchResults = search.trim()
-    ? allCategories.filter((c) => c.name.includes(search.trim()) || c.nameEn.toLowerCase().includes(search.trim().toLowerCase()))
-    : [];
+  // debounce بسيط — بحث حقيقي عبر الشبكة (search_categories) على كل
+  // ضغطة حرف كان معقول لما كان بحث محلي متزامن، مش دلوقتي.
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-  const children = getChildren(parentId);
-  const path = parentId ? getPath(parentId) : [];
+  const { state: searchState } = useApiResult(
+    () => (debouncedSearch ? searchCategories(debouncedSearch) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [debouncedSearch],
+    (data) => debouncedSearch.length > 0 && data.length === 0,
+  );
 
+  const { state: childrenState, refetch: refetchChildren } = useApiResult(
+    () => getChildren(parentId ?? undefined),
+    [parentId],
+    (data) => data.length === 0,
+  );
+
+  const { state: pathState } = useApiResult(
+    () => (parentId ? getPath(parentId) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [parentId],
+  );
+  const path = pathState.kind === 'success' ? pathState.data : [];
+
+  // isGroup جاي فعليًا من get_children/search_categories دلوقتي (زي
+  // app/category/[id].tsx بالظبط) — بديل نداء getChildren(cat.id).length>0
+  // إضافي لكل عنصر كان بيحصل قبل كده.
   const selectLeaf = (cat: Category) => {
-    if (getChildren(cat.id).length > 0) {
+    if (cat.isGroup) {
       setParentId(cat.id);
       setSearch('');
     } else {
@@ -286,19 +354,15 @@ function CategoryStep() {
       </View>
 
       {search.trim() ? (
-        <View style={{ gap: 8 }}>
-          {searchResults.length === 0 ? (
-            <Text style={{ color: colors.ink3, fontSize: 12.5, textAlign: 'center', paddingVertical: 20 }}>مفيش نتائج</Text>
-          ) : (
-            searchResults.map((c) => (
-              <Pressable key={c.id} onPress={() => selectLeaf(c)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r2, padding: 12 }}>
-                <Icon name={c.icon} size={18} color={colors.ink2} />
-                <Text style={{ flex: 1, fontSize: 13, fontWeight: '600', color: colors.ink }}>{getPath(c.id).map((p) => p.name).join(' ← ')}</Text>
-                <Icon name="chev-l" size={14} color={colors.ink3} />
-              </Pressable>
-            ))
-          )}
-        </View>
+        searchState.kind === 'success' ? (
+          <View style={{ gap: 8 }}>
+            {searchState.data.map((c) => (
+              <CategorySearchResultRow key={c.id} category={c} onPress={() => selectLeaf(c)} />
+            ))}
+          </View>
+        ) : (
+          <ApiStateView state={searchState} />
+        )
       ) : (
         <>
           {path.length > 0 ? (
@@ -317,34 +381,49 @@ function CategoryStep() {
             </View>
           ) : null}
 
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s3 }}>
-            {children.map((c) => {
-              const active = postDraft.categoryKey === c.id;
-              const hasKids = getChildren(c.id).length > 0;
-              return (
-                <Pressable
-                  key={c.id}
-                  onPress={() => selectLeaf(c)}
-                  style={{ width: '31%', paddingVertical: spacing.s3, alignItems: 'center', backgroundColor: active ? colors.signalWash : colors.card, borderWidth: 1.5, borderColor: active ? colors.signal : colors.line, borderRadius: radius.r3 }}
-                >
-                  <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.s2 }}>
-                    <Icon name={c.icon} color={colors.signal2} size={22} />
-                  </View>
-                  <Text style={{ fontSize: 11, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>{c.name}</Text>
-                  {hasKids ? <Text style={{ fontSize: 9, color: colors.ink3, marginTop: 2 }}>فروع أكتر ›</Text> : null}
-                </Pressable>
-              );
-            })}
-          </View>
+          {childrenState.kind === 'success' ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s3 }}>
+              {childrenState.data.map((c) => {
+                const active = postDraft.categoryKey === c.id;
+                return (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => selectLeaf(c)}
+                    style={{ width: '31%', paddingVertical: spacing.s3, alignItems: 'center', backgroundColor: active ? colors.signalWash : colors.card, borderWidth: 1.5, borderColor: active ? colors.signal : colors.line, borderRadius: radius.r3 }}
+                  >
+                    <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.s2 }}>
+                      <Icon name={c.icon} color={colors.signal2} size={22} />
+                    </View>
+                    <Text style={{ fontSize: 11, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>{c.name}</Text>
+                    {c.isGroup ? <Text style={{ fontSize: 9, color: colors.ink3, marginTop: 2 }}>فروع أكتر ›</Text> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : (
+            <ApiStateView state={childrenState} onRetry={refetchChildren} />
+          )}
         </>
       )}
     </View>
   );
 }
 
-function flattenChildren(id: string): Category[] {
-  const kids = getChildren(id);
-  return kids.flatMap((k) => [k, ...flattenChildren(k.id)]);
+/** صف نتيجة بحث واحد — بيجيب مساره الكامل (تصنيف أب ← أب ← هو) لوحده عبر
+ * getPath، عشان نتايج البحث تتعرض بمسارها الكامل زي التصفّح العادي بالظبط
+ * (مش بس اسم التصنيف نفسه) من غير ما CategoryStep يجيب مسار كل نتيجة
+ * مقدّمًا. بيرجع اسم التصنيف بس لحد ما المسار يوصل. */
+function CategorySearchResultRow({ category, onPress }: { category: Category; onPress: () => void }) {
+  const { colors, radius } = useTheme();
+  const { state } = useApiResult(() => getPath(category.id), [category.id]);
+  const label = state.kind === 'success' ? state.data.map((p) => p.name).join(' ← ') : category.name;
+  return (
+    <Pressable onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r2, padding: 12 }}>
+      <Icon name={category.icon} size={18} color={colors.ink2} />
+      <Text style={{ flex: 1, fontSize: 13, fontWeight: '600', color: colors.ink }}>{label}</Text>
+      <Icon name="chev-l" size={14} color={colors.ink3} />
+    </Pressable>
+  );
 }
 
 // ============================================================ خطوة 2: البراند والموديل
@@ -353,8 +432,21 @@ function BrandStep({ category }: { category: Category }) {
   const { postDraft, setPostDraft } = useAppStore();
   const [search, setSearch] = useState('');
 
-  const brands = getBrandsForCategory(category.id).filter((b) => !search.trim() || b.name.toLowerCase().includes(search.trim().toLowerCase()));
-  const models = postDraft.brandId ? getModelsForBrand(postDraft.brandId) : [];
+  const { state: brandsState, refetch: refetchBrands } = useApiResult(
+    () => getBrandsForCategory(category.id),
+    [category.id],
+    (data) => data.length === 0,
+  );
+  const brands = brandsState.kind === 'success'
+    ? brandsState.data.filter((b) => !search.trim() || b.name.toLowerCase().includes(search.trim().toLowerCase()))
+    : [];
+  const selectedBrand = brandsState.kind === 'success' ? brandsState.data.find((b) => b.id === postDraft.brandId) : undefined;
+
+  const { state: modelsState, refetch: refetchModels } = useApiResult(
+    () => (postDraft.brandId ? getModelsForBrand(postDraft.brandId) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [postDraft.brandId],
+    (data) => data.length === 0,
+  );
 
   if (!postDraft.brandId) {
     return (
@@ -363,25 +455,27 @@ function BrandStep({ category }: { category: Category }) {
           <Icon name="search" size={16} color={colors.ink3} />
           <TextInput value={search} onChangeText={setSearch} placeholder="دوّر على براند" placeholderTextColor={colors.ink3} style={{ flex: 1, paddingVertical: 12, fontSize: 12.5, color: colors.ink }} />
         </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s3 }}>
-          {brands.map((b) => (
-            <Pressable
-              key={b.id}
-              onPress={() => setPostDraft({ brandId: b.id, modelId: null })}
-              style={{ width: 78, alignItems: 'center', gap: 6 }}
-            >
-              <BrandLogo brandId={b.id} size={56} fallbackIcon={category.icon} />
-              <Text numberOfLines={1} style={{ fontSize: 10.5, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>
-                {b.name}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        {brandsState.kind === 'success' ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s3 }}>
+            {brands.map((b) => (
+              <Pressable
+                key={b.id}
+                onPress={() => setPostDraft({ brandId: b.id, modelId: null })}
+                style={{ width: 78, alignItems: 'center', gap: 6 }}
+              >
+                <BrandLogo brandId={b.id} size={56} fallbackIcon={category.icon} />
+                <Text numberOfLines={1} style={{ fontSize: 10.5, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>
+                  {b.name}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : (
+          <ApiStateView state={brandsState} onRetry={refetchBrands} />
+        )}
       </View>
     );
   }
-
-  const selectedBrand = getBrandsForCategory(category.id).find((b) => b.id === postDraft.brandId);
 
   return (
     <View>
@@ -393,11 +487,15 @@ function BrandStep({ category }: { category: Category }) {
         </View>
       </Pressable>
       <Text style={{ fontSize: 11, fontWeight: '700', color: colors.ink3, marginBottom: spacing.s2 }}>الموديل</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s2 }}>
-        {models.map((mo) => (
-          <Chip key={mo.id} label={mo.name} active={postDraft.modelId === mo.id} onPress={() => setPostDraft({ modelId: mo.id })} />
-        ))}
-      </View>
+      {modelsState.kind === 'success' ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s2 }}>
+          {modelsState.data.map((mo) => (
+            <Chip key={mo.id} label={mo.name} active={postDraft.modelId === mo.id} onPress={() => setPostDraft({ modelId: mo.id })} />
+          ))}
+        </View>
+      ) : (
+        <ApiStateView state={modelsState} onRetry={refetchModels} />
+      )}
     </View>
   );
 }
@@ -548,6 +646,14 @@ function DetailsStep({ category, onEditCategory, brandDark }: { category?: Categ
   const { postDraft, setPostDraft, business } = useAppStore();
   const [showDiscountDatePicker, setShowDiscountDatePicker] = useState(false);
 
+  const { state: categoryPathState } = useApiResult(
+    () => (category ? getPath(category.id) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [category?.id],
+  );
+  const categoryPathLabel = categoryPathState.kind === 'success' && categoryPathState.data.length > 0
+    ? categoryPathState.data.map((p) => p.name).join(' ← ')
+    : category?.name;
+
   const conditions: Condition[] = category?.allowedConditions ?? (['new', 'like_new', 'excellent', 'good', 'used'] as Condition[]);
   const sellingTypes: SellingType[] = category?.allowedSellingTypes ?? ['sale'];
   const priceTypes: PriceType[] = ['fixed', 'negotiable', 'contact', 'free'];
@@ -603,7 +709,7 @@ function DetailsStep({ category, onEditCategory, brandDark }: { category?: Categ
       <View style={{ marginBottom: spacing.s4 }}>
         <Text style={{ fontSize: 11, fontWeight: '700', color: colors.ink, marginBottom: 6 }}>التصنيف</Text>
         <Pressable onPress={onEditCategory} style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r2, padding: 13, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text style={{ fontSize: 12.5, color: colors.ink }}>{category ? getPath(category.id).map((p) => p.name).join(' ← ') : 'اختار تصنيف'}</Text>
+          <Text style={{ fontSize: 12.5, color: colors.ink }}>{category ? categoryPathLabel : 'اختار تصنيف'}</Text>
           <Icon name="edit" size={14} color={colors.ink3} />
         </Pressable>
       </View>
@@ -684,7 +790,19 @@ function LocationStep() {
   const { postDraft, setPostDraft } = useAppStore();
   const [sheetOpen, setSheetOpen] = useState(!postDraft.locationId);
 
-  const selected = postDraft.locationId ? getLocation(postDraft.locationId) : undefined;
+  // get_location_path بيرجّع المسار الكامل (محافظة، مدينة، منطقة) في نداء
+  // واحد — بديل getLocation()+locationPathLabel() المتزامنين القدامى.
+  const { state: pathState } = useApiResult(
+    () => (postDraft.locationId ? getLocationPath(postDraft.locationId) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [postDraft.locationId],
+  );
+  const selectedLabel = !postDraft.locationId
+    ? null
+    : pathState.kind === 'success' && pathState.data.length > 0
+      ? pathState.data.map((p) => p.name).join('، ')
+      : pathState.kind === 'loading'
+        ? 'جاري التحميل...'
+        : 'تعذّر تحميل اسم الموقع';
 
   return (
     <View>
@@ -696,7 +814,7 @@ function LocationStep() {
           gap: spacing.s3,
           backgroundColor: colors.card,
           borderWidth: 1.5,
-          borderColor: selected ? colors.verify : colors.line,
+          borderColor: postDraft.locationId ? colors.verify : colors.line,
           borderRadius: radius.r3,
           padding: spacing.s4,
         }}
@@ -706,7 +824,7 @@ function LocationStep() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.ink }}>
-            {selected ? locationPathLabel(selected.id) : 'اضغط لاختيار موقع الإعلان'}
+            {selectedLabel ?? 'اضغط لاختيار موقع الإعلان'}
           </Text>
           <Text style={{ fontSize: 10.5, color: colors.ink3, marginTop: 2 }}>محافظة، مدينة، أو منطقة بالظبط</Text>
         </View>
@@ -728,6 +846,31 @@ function LocationStep() {
 function ReviewStep({ category }: { category: Category }) {
   const { postDraft } = useAppStore();
   const { radius, spacing } = useTheme();
+
+  const { state: categoryPathState } = useApiResult(() => getPath(category.id), [category.id]);
+  const categoryPath = categoryPathState.kind === 'success' && categoryPathState.data.length > 0
+    ? categoryPathState.data.map((p) => p.name).join(' ← ')
+    : category.name;
+
+  const { state: brandsState } = useApiResult(() => getBrandsForCategory(category.id), [category.id]);
+  const brandName = brandsState.kind === 'success' ? brandsState.data.find((b) => b.id === postDraft.brandId)?.name ?? '—' : '…';
+
+  const { state: modelsState } = useApiResult(
+    () => (postDraft.brandId ? getModelsForBrand(postDraft.brandId) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [postDraft.brandId],
+  );
+  const modelName = modelsState.kind === 'success' ? modelsState.data.find((m) => m.id === postDraft.modelId)?.name ?? '—' : '…';
+
+  const { state: locationPathState } = useApiResult(
+    () => (postDraft.locationId ? getLocationPath(postDraft.locationId) : Promise.resolve({ status: 'success' as const, data: [] })),
+    [postDraft.locationId],
+  );
+  const locationLabel = !postDraft.locationId
+    ? '—'
+    : locationPathState.kind === 'success' && locationPathState.data.length > 0
+      ? locationPathState.data.map((p) => p.name).join('، ')
+      : '…';
+
   return (
     <View>
       {postDraft.photoUris.length > 0 ? (
@@ -738,9 +881,9 @@ function ReviewStep({ category }: { category: Category }) {
         </ScrollView>
       ) : null}
       <ReviewSection title="التصنيف">
-        <ReviewRow label="التصنيف" value={getPath(category.id).map((p) => p.name).join(' ← ')} />
-        {postDraft.brandId ? <ReviewRow label="البراند" value={getBrandsForCategory(category.id).find((b) => b.id === postDraft.brandId)?.name ?? '—'} /> : null}
-        {postDraft.modelId ? <ReviewRow label="الموديل" value={getModelsForBrand(postDraft.brandId ?? '').find((m) => m.id === postDraft.modelId)?.name ?? '—'} last /> : null}
+        <ReviewRow label="التصنيف" value={categoryPath} />
+        {postDraft.brandId ? <ReviewRow label="البراند" value={brandName} /> : null}
+        {postDraft.modelId ? <ReviewRow label="الموديل" value={modelName} last /> : null}
       </ReviewSection>
       {category.fields.length > 0 ? (
         <ReviewSection title="الخصائص">
@@ -764,7 +907,7 @@ function ReviewStep({ category }: { category: Category }) {
         <ReviewRow label="العنوان" value={postDraft.title || '—'} />
         <ReviewRow label="السعر" value={postDraft.priceType === 'free' ? 'مجاني' : postDraft.priceType === 'contact' ? 'تواصل للسعر' : postDraft.price ? `${postDraft.price} ج.م` : '—'} />
         <ReviewRow label="الحالة" value={postDraft.condition ? CONDITION_LABELS[postDraft.condition] : '—'} />
-        <ReviewRow label="الموقع" value={postDraft.locationId ? locationPathLabel(postDraft.locationId) : '—'} last />
+        <ReviewRow label="الموقع" value={locationLabel} last />
       </ReviewSection>
     </View>
   );

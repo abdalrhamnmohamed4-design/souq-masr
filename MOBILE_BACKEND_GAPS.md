@@ -6,7 +6,7 @@ which currently contains exactly two API modules:
 
 ```
 souq_masr/api/v1/app_config.py   — app version/force-update check (integrated, StartupGate)
-souq_masr/api/v1/taxonomy.py     — 10 endpoints (integrated, Phase 2A — see MOBILE_BACKEND_INTEGRATION_REPORT.md)
+souq_masr/api/v1/taxonomy.py     — 12 endpoints (integrated, Phase 2A COMPLETE — see MOBILE_BACKEND_INTEGRATION_REPORT.md)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -17,31 +17,41 @@ endpoint exists.
 
 ---
 
-## Taxonomy — 2 small gaps found while wiring Phase 2A
+## Taxonomy — 0 open gaps (both resolved during Phase 2A)
 
-### 1. `get_location(location_key)` — single location lookup by ID
-- **Feature blocked:** `components/LocationPicker.tsx`'s drill-down header
-  (showing the current governorate/city's own name while browsing its
-  children) and resolving `initialLocationId`'s parent when the picker
-  reopens with a pre-selected location whose parent chain isn't already
-  cached client-side from an earlier `get_location_children` call.
-- **Why it's not faked:** the picker's own name/parent for an arbitrary ID
-  isn't derivable from any of the 10 existing endpoints without either
-  guessing or re-fetching every governorate's children until a match turns
-  up (which isn't "using the API," it's brute-forcing around a missing one).
-- **Required endpoint:** `souq_masr.api.v1.taxonomy.get_location`
-- **Request:** `GET /api/method/souq_masr.api.v1.taxonomy.get_location?location_key=gov-القاهرة`
-- **Response:** `{"message": {"id": "gov-القاهرة", "name": "القاهرة", "location_type": "Governorate", "parent_id": null}}`
-- **Auth:** `allow_guest=True` (matches every other taxonomy endpoint — read-only, public)
-- **Priority:** Medium — `LocationPicker` still works via mock for now (unchanged, not broken); needed before `LocationPicker` itself moves off mock in a later Phase 2A follow-up.
+Both gaps below were found while wiring `components/LocationPicker.tsx` and
+are now **built, deployed, and live-tested** — see
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2A section for the live HTTP
+test results. Kept here as a record of what was actually missing and how it
+was closed, per this doc's own "don't fake it, document it" convention.
 
-### 2. `get_location_path(location_key)` — breadcrumb for a location
-- **Feature blocked:** `locationPathLabel(id)` (e.g. "القاهرة، مدينة نصر، الحي العاشر") — used in `LocationPicker`'s search-result subtitles and several listing/detail screens showing "posted in: <full location path>".
-- **Required endpoint:** `souq_masr.api.v1.taxonomy.get_location_path`
-- **Request:** `GET /api/method/souq_masr.api.v1.taxonomy.get_location_path?location_key=area-مدينة-نصر-عباس-العقاد`
-- **Response:** `{"message": [{"id":"gov-القاهرة","name":"القاهرة"},{"id":"city-مدينة-نصر","name":"مدينة نصر"},{"id":"area-...","name":"عباس العقاد"}]}` — same shape as `get_path` for categories, just for the location tree.
-- **Auth:** `allow_guest=True`
-- **Priority:** Low — only affects a display string, mock `locationPathLabel` keeps working exactly as before.
+### 1. ~~`get_location(location_key)` — single location lookup by ID~~ ✅ RESOLVED
+- **Was blocking:** `components/LocationPicker.tsx`'s drill-down header and
+  resolving `initialLocationId`'s parent when the picker reopens with a
+  pre-selected location.
+- **Shipped as:** `souq_masr.api.v1.taxonomy.get_location(location_key)` —
+  same 404-on-invalid-id pattern as `get_category`, same response shape as
+  `search_locations()`'s items. Live-tested for a governorate, a 3-level-deep
+  area, and an invalid id (clean 404, no traceback).
+- **Consumed by:** `services/taxonomyService.ts`'s `getLocation()`, used in
+  `components/LocationPicker.tsx` (`initialLocationId` resolution, popular-
+  governorates section) and indirectly by `app/post/index.tsx` (via
+  `LocationPicker`).
+
+### 2. ~~`get_location_path(location_key)` — breadcrumb for a location~~ ✅ RESOLVED
+- **Was blocking:** `locationPathLabel(id)`'s server-side equivalent (e.g.
+  "القاهرة، مدينة نصر، الرحاب") — used for the selected-location display
+  text in `app/post/index.tsx`'s Location step and Review step, and for
+  `app/(tabs)/home.tsx`'s "اختار مدينتك" city-name resolution.
+- **Shipped as:** `souq_masr.api.v1.taxonomy.get_location_path(location_key)`
+  — walks up `parent_souq_masr_location` exactly like `get_path()` does for
+  categories, root-first `[{id,name}, ...]`. Unlike `get_path()`, validates
+  the id up front (clean 404) since this endpoint is reachable with a
+  user-persisted/unverified id (a stored `onboarding.locationId`), not only
+  an already-known-valid one from browsing.
+- **Consumed by:** `services/taxonomyService.ts`'s `getLocationPath()`, used
+  in `app/(tabs)/home.tsx`, `app/post/index.tsx` (`LocationStep`,
+  `ReviewStep`, and `publish()`'s `city` field).
 
 ---
 

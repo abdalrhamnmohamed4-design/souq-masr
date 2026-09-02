@@ -67,8 +67,8 @@ type RawPathEntry = { id: string; name: string };
 
 type RawBrand = { id: string; name: string; logo: string | null };
 type RawModel = { id: string; name: string };
-type RawLocation = { id: string; name: string };
-type RawLocationChild = { id: string; name: string; location_type: string };
+type RawLocation = { id: string; name: string; is_group: number | boolean };
+type RawLocationChild = { id: string; name: string; location_type: string; is_group: number | boolean };
 type RawLocationSearchResult = { id: string; name: string; location_type: string; parent_id: string | null };
 
 // ============================================================ محوّلات (Frappe raw → app-native types)
@@ -143,11 +143,11 @@ const LOCATION_TYPE_MAP: Record<string, LocationType> = {
 };
 
 function adaptLocationChild(l: RawLocationChild, parentId: string): LocationNode {
-  return { id: l.id, name: l.name, type: LOCATION_TYPE_MAP[l.location_type] ?? 'area', parentId };
+  return { id: l.id, name: l.name, type: LOCATION_TYPE_MAP[l.location_type] ?? 'area', parentId, isGroup: !!l.is_group };
 }
 
 function adaptGovernorate(l: RawLocation): LocationNode {
-  return { id: l.id, name: l.name, type: 'governorate', parentId: null };
+  return { id: l.id, name: l.name, type: 'governorate', parentId: null, isGroup: !!l.is_group };
 }
 
 function adaptLocationSearchResult(l: RawLocationSearchResult): LocationNode {
@@ -221,4 +221,22 @@ export async function searchLocations(q: string, limit = 30): Promise<ApiResult<
   const r = await frappeGet<RawLocationSearchResult[]>(`${NS}.search_locations`, { q, limit });
   if (r.status !== 'success') return r;
   return { status: 'success', data: r.data.map(adaptLocationSearchResult) };
+}
+
+/** موقع واحد بالـid — mirrors mock's getLocation(). أُضيف مع endpoint
+ * get_location الحقيقي (كان الفجوة الوحيدة الموثّقة في
+ * MOBILE_BACKEND_GAPS.md #1) — نفس شكل رد search_locations's عناصر
+ * بالظبط، فبيستخدم نفس المحوّل adaptLocationSearchResult. */
+export async function getLocation(locationKey: string): Promise<ApiResult<LocationNode>> {
+  const r = await frappeGet<RawLocationSearchResult>(`${NS}.get_location`, { location_key: locationKey });
+  if (r.status !== 'success') return r;
+  return { status: 'success', data: adaptLocationSearchResult(r.data) };
+}
+
+/** المسار من المحافظة لحد الموقع ده (محافظة ← مدينة ← منطقة) — mirrors
+ * mock's locationPathLabel()'s الفكرة، بس بيرجّع المسار الخام مش نص
+ * جاهز (نفس شكل getPath() للتصنيفات). أُضيف مع endpoint
+ * get_location_path الحقيقي (MOBILE_BACKEND_GAPS.md #2). */
+export async function getLocationPath(locationKey: string): Promise<ApiResult<{ id: string; name: string }[]>> {
+  return frappeGet<{ id: string; name: string }[]>(`${NS}.get_location_path`, { location_key: locationKey });
 }

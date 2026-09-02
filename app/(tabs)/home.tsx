@@ -33,8 +33,7 @@ import {
   newestListings,
 } from '@/mock/homeFeed';
 import { categoryLabel, getAllDescendantIds } from '@/mock/taxonomy/categories';
-import { locationPathLabel } from '@/mock/taxonomy/locations';
-import { getBrandsForCategory, getCategory, getChildren } from '@/services/taxonomyService';
+import { getBrandsForCategory, getCategory, getChildren, getLocationPath } from '@/services/taxonomyService';
 import { useAppStore, useDiscoverableListings } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
 import { useAllJobs, useAllServices } from '@/store/useJobsStore';
@@ -353,7 +352,18 @@ export default function Home() {
       <LocationPicker
         visible={locationSheetOpen}
         onClose={() => setLocationSheetOpen(false)}
-        onSelect={(id) => setOnboarding({ locationId: id, city: locationPathLabel(id).split('، ')[0] })}
+        onSelect={(id) => {
+          // بنسجّل locationId على طول (مش محتاج ننتظر الشبكة عشانه)، واسم
+          // المحافظة (city) بيتحدّث لما get_location_path يرجع — نفس فكرة
+          // locationPathLabel(id).split('، ')[0] القديمة (أول عنصر = المحافظة،
+          // المسار جاي من الجذر) بس من الباك إند الحقيقي دلوقتي.
+          setOnboarding({ locationId: id });
+          getLocationPath(id).then((r) => {
+            if (r.status === 'success' && r.data.length > 0) {
+              setOnboarding({ city: r.data[0].name });
+            }
+          });
+        }}
         initialLocationId={onboardingLocationId}
         title={t('home.chooseCity')}
       />
