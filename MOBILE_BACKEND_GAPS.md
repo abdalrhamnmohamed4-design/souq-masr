@@ -9,6 +9,9 @@ souq_masr/api/v1/app_config.py   — app version/force-update check (integrated,
 souq_masr/api/v1/taxonomy.py     — 12 endpoints (integrated, Phase 2A COMPLETE)
 souq_masr/api/v1/auth.py         — 1 endpoint: signin (integrated, Phase 2B — see MOBILE_BACKEND_INTEGRATION_REPORT.md)
 souq_masr/api/v1/listings.py     — 12 endpoints (built + live-tested, Phase 2B Slice 1+2 — 11 of 12 now wired into a mobile screen; see MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B sections for exactly which ones)
+souq_masr/api/v1/favorites.py    — 4 endpoints (integrated, Phase 2B Slice 3 — Listings only, Services untouched)
+souq_masr/api/v1/saved_searches.py — 3 endpoints (integrated, Phase 2B Slice 3)
+souq_masr/api/v1/reports.py      — 2 endpoints (integrated, Phase 2B Slice 3 — Listings only)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -74,7 +77,8 @@ below is genuinely not built yet.
 | Listing discovery by category/location (`app/(tabs)/home.tsx`) | ✅ Backend built+tested (`get_listings_by_category`, `get_listings_by_location`). ✅ **Wired** — every home listing section (latest/cheapest/nearby/cars/real-estate) is real now; "featured" stays honestly empty (no promotion system). | Guest | Done for this slice |
 | Seller public profile (`app/seller/[id].tsx`) | ⏳ **Not built.** `get_listing`/`get_public_listings` embed minimal seller display fields (name/phone/member-since/ads-count) directly in the listing response as a pragmatic substitute, but there's still no standalone seller-profile endpoint (reviews, full ad history, etc.) | Guest | High |
 | Increment view count | ✅ Backend built+tested+wired (`increment_listing_views`, called from `app/detail/[id].tsx` for real listings) | Guest | Done |
-| Saved searches sync (`store`'s `savedSearches`) | ⏳ Not built | **Auth** | Medium |
+| Favorites (toggle/list) | ✅ Built, live-tested, wired — see Phase 2D table below (moved there, this row kept only as a pointer) | Guest reads `false` / Auth mutations | Done |
+| Saved searches sync | ✅ Built, live-tested, wired — see Phase 2D table below | **Auth** | Done |
 
 ## Phase 2C — Authentication / profile
 
@@ -94,14 +98,22 @@ Phase 2B. `users.me`/`users.update`/social sign-in remain unbuilt.
 
 ## Phase 2D — User actions
 
-| Feature | Required endpoint (proposed) | Auth | Priority |
+**Update (Slice 3):** Favorites (Listings) and Reports (Listings) are now
+**built, live-tested, and wired** — see
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B Slice 3 section.
+Reviews, Favorites for Services/Jobs, seller-block, notifications, and
+wallet remain unbuilt — none of those domains were touched this slice.
+
+| Feature | Status | Auth | Priority |
 |---|---|---|---|
-| Favorites (toggle/list) | `souq_masr.api.v1.favorites.toggle`, `.list` | Auth | High |
-| Reviews (add/list for a seller) | `souq_masr.api.v1.reviews.create`, `.list_for_seller` | Auth (create) / Guest (list) | Medium |
-| Reports (report a listing) | `souq_masr.api.v1.reports.create` | Auth | Medium |
-| Block/unblock seller | `souq_masr.api.v1.users.block`, `.unblock` | Auth | Low |
-| Notifications | `souq_masr.api.v1.notifications.list`, `.mark_read` | Auth | Medium |
-| Wallet (top-up, transfer, promote balance) | `souq_masr.api.v1.wallet.*` | Auth | Low (needs a real payment gateway decision first, not just an endpoint) |
+| Favorites — Listings (toggle/list) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.favorites.{add_favorite,remove_favorite,is_favorite,get_my_favorites}` — normalized `Souq Masr Listing Favorite` DocType, `is_favorite` embedded in every listing response. `app/favorites.tsx`, `app/detail/[id].tsx`, `RowCard`, home.tsx's `MiniCard` all real-backend-aware for real listings (local store made real-aware internally — see integration report). | Auth (mutations); Guest reads `false` | Done for Listings |
+| Favorites — Services/Jobs | ⏳ Not built — the shared local `favorites` Record still fully backs these, untouched, by design (out of scope this phase) | Auth | Medium |
+| Reviews (add/list for a seller) | ⏳ Not built | Auth (create) / Guest (list) | Medium |
+| Reports — Listings | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.reports.{report_listing,has_reported}` — `Souq Masr Listing Report` DocType, create-only permissions (no read path for any non-admin role, by design). `app/detail/[id].tsx`'s report flow no longer fakes success for real listings. | Auth | Done for Listings |
+| Saved searches sync (`store`'s `savedSearches`) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.saved_searches.{create_saved_search,get_my_saved_searches,delete_saved_search}` — `Souq Masr Saved Search` DocType, schema-ready `location`/`min_price`/`max_price`/`sort` fields not yet populated (no UI collects them). `app/results.tsx`/`app/saved-searches.tsx` wired; a pre-existing filter-restoration bug fixed alongside. | **Auth** | Done |
+| Block/unblock seller | ⏳ Not built | Auth | Low |
+| Notifications | ⏳ Not built | Auth | Medium |
+| Wallet (top-up, transfer, promote balance) | ⏳ Not built | Auth | Low (needs a real payment gateway decision first, not just an endpoint) |
 
 ## Phase 2E — Chat
 
@@ -143,4 +155,4 @@ a small, contained follow-up once basic Listings usage patterns are clear.
 
 - **Admin dashboard** (`admin/`) — untouched per this phase's explicit instruction, not evaluated here.
 - **Domain + SSL** for the backend — tracked in `BACKEND_PRODUCTION_READINESS.md` §12, not a mobile-integration gap.
-- **Chat, Reviews, Favorites (server-side), Jobs, Services, Notifications, Payments** — explicitly excluded from Phase 2B by this phase's own instruction, not evaluated here.
+- **Chat, Reviews, Jobs, Services, Notifications, Payments** — explicitly excluded from Phase 2B by this phase's own instruction, not evaluated here. (Favorites/Saved Searches/Reports for **Listings** specifically are now built — Phase 2B Slice 3, see above; Favorites for Services/Jobs remain local-only, untouched.)

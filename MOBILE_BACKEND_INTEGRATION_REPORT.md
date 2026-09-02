@@ -1354,3 +1354,524 @@ these were silently dropped — each is named here and in
 
 **No Chat/Favorites/Reviews/Jobs/Services/Notifications/Payments code was
 touched.** No Phase 2A regression. No mock data deleted globally.
+
+---
+---
+
+# Phase 2B Slice 3 — Favorites, Saved Searches, Reports
+
+**Scope of this section:** real per-user Listing features —
+`FAVORITES + SAVED SEARCHES + REPORTS`. Slices 1–2 unmodified, still GO.
+Phase 2A untouched. Chat, Reviews, Jobs, Services, Notifications,
+Payments, and `ProductVariant`/`sku` are **not** part of this slice —
+none of that code was touched. Note: Favorites' local mechanism is
+**shared** with Services (`app/favorites.tsx`, `services/[id].tsx`) —
+only the Listing side of it was migrated; the Service side is untouched,
+by construction (see §1).
+
+**This is NOT a whole-Phase-2B GO.** GO/NO-GO below applies only to
+Favorites + Saved Searches + Reports.
+
+## 1. Audit performed before coding
+
+Read before writing anything: `MOBILE_BACKEND_INTEGRATION_REPORT.md`/
+`MOBILE_BACKEND_GAPS.md` (Slice 1+2 state), `services/listingService.ts`,
+`services/authService.ts`, `lib/apiClient.ts` (unchanged since Slice 2),
+`store/useAppStore.ts`'s favorites/savedSearches/reports slices,
+`app/favorites.tsx`, `app/saved-searches.tsx`, `app/detail/[id].tsx`'s
+favorite/report UI, `components/listing/RowCard.tsx`.
+
+**What the audit found that shaped the design:**
+- `favorites: Record<string, true>` is a single flat map keyed by **any**
+  id — used identically for Listings *and* Services (`app/favorites.tsx`'s
+  own header comment documents this explicitly: the same Record, same
+  `toggleFavorite`/`isFavorite`, is what `services/[id].tsx`'s heart
+  button reads too). This meant the local mechanism could **not** simply
+  be replaced — Services must keep working through it unchanged, so only
+  the *Listing* path was made real-backend-aware, inside the same
+  functions, branching on `isRealListingId()`.
+- The favorite heart isn't only on the detail screen — `components/
+  listing/RowCard.tsx` (used by `results.tsx` **and** `favorites.tsx`) has
+  its own internal `isFavorite`/`toggleFavorite` calls, and `app/(tabs)/
+  home.tsx`'s `MiniCard` reads `isFav`/`toggleFav` closures computed at
+  the home.tsx level. Migrating favorites correctly meant every one of
+  these existing call sites had to keep working **unchanged** — which
+  drove the final design: make `store/useAppStore.ts`'s `toggleFavorite`/
+  `isFavorite` themselves real-aware (§2), so every existing consumer gets
+  correct behavior for free, with zero changes to `RowCard.tsx` or
+  `MiniCard`.
+- `SavedSearch`'s current fields (`categoryId`, `query`,
+  `conditionFilter`, `fieldFilters`) exactly match what `results.tsx`'s
+  filter sheet can produce today — no location or price-range filter
+  exists in the UI yet (confirmed in Slice 2's own audit), so those and
+  `sort` are schema-ready on the backend (§4) but not yet populated by
+  the mobile app.
+- **A real, pre-existing bug** in `app/saved-searches.tsx`: restoring a
+  saved search only ever passed `category`/`q` to `/results`, silently
+  dropping `conditionFilter` and `fieldFilters` — confirmed by reading the
+  restore handler's `URLSearchParams` construction directly. Fixed in §5.
+- `Report`'s current shape (`id, listingId, reason, createdAt`) has no
+  `description` field — the mobile UI never collected one (only a reason
+  picker) — the backend model is schema-ready for it (§4) but it isn't
+  wired into the report sheet's UI this slice (no UI redesign needed to
+  close this gap; not requested).
+
+---
+
+## 2. Favorites — Real Backend
+
+**DocType: `Souq Masr Listing Favorite`** — one row per (owner, listing)
+pair; `owner` is Frappe's standard field (the favoriting user), not a
+custom one. `listing` is a required `Link` to `Souq Masr Listing`.
+**Enforcement of "one favorite per user/listing":** primarily
+`add_favorite`'s check-then-idempotent-return (no error, no duplicate row
+— matches "Test duplicate add ... safely" literally: duplicate add is not
+an error, it's a no-op that returns the existing favorite), backed by a
+`validate()` safety check on the DocType itself for the race-condition
+case (two near-simultaneous inserts for the same pair). Frappe's DocType
+JSON has no composite-unique-key primitive, so this two-layer approach —
+not a DB constraint — is the real enforcement, disclosed as such rather
+than implied to be a schema guarantee.
+
+**Permissions** (deliberately different from `Souq Masr Listing`'s — a
+favorite is *private*, not public data): `Souq Masr Admin` full;
+`All` role `create=1` only (any signed-in user can create); `All` +
+`if_owner`: `read=1, delete=1` (an authenticated user can only read/delete
+their **own** rows — this if_owner scoping, not just create being
+guarded, is what stops another authenticated user from reading someone
+else's favorites through Frappe's own generic REST resource endpoint, not
+only through the custom API). **No Guest row at all** — Guest has zero
+access to this DocType by any path.
+
+**API (`souq_masr/api/v1/favorites.py`, all live-tested §8):**
+- `add_favorite(listing_id)` — auth required, listing must exist and be
+  public (Active/Paused/Sold, matching `get_listing`'s own visibility
+  rule), idempotent on duplicate.
+- `remove_favorite(listing_id)` — auth required, idempotent on repeated
+  removal (a second call is a safe no-op, not an error).
+- `is_favorite(listing_id)` — `allow_guest=True`: a Guest session always
+  gets `false` with no DB query at all (no identity to check against);
+  exported from the mobile service for completeness but not currently
+  called directly by any screen (see `get_listing`'s embedded field
+  below).
+- `get_my_favorites(page, limit)` — auth required, returns listing
+  **summaries** (reuses `listings.py`'s `_serialize_summary`, not a
+  duplicate adapter), newest-favorited-first, gracefully skips any
+  favorite whose listing has since been deleted (an orphaned Favorite row
+  — see the delete-listing bug below — never crashes this endpoint).
+
+**Cross-cutting addition:** `is_favorite` is now embedded directly in
+every listing response that returns to an authenticated viewer —
+`get_listing`'s `_serialize()` (single detail) and every list endpoint's
+`_serialize_summary()` (`search_listings`, `get_public_listings`,
+`get_listings_by_category`, `get_listings_by_location`, `get_my_listings`,
+`get_my_favorites`). List endpoints compute this with **one batched query
+per page** (`_favorited_ids_for_current_user()`), not a per-row
+`frappe.db.exists()` call — an N+1 query pattern was deliberately avoided
+before it was ever written, not fixed after the fact. Live-verified: a
+listing's `is_favorite` flips correctly in `search_listings`'s own
+response immediately after favoriting, and is always `false` for a Guest
+viewer regardless of who else favorited it.
+
+**Security tests, all live-verified (§8):** Guest blocked on
+add/remove/get_my_favorites (403, Frappe's own guest-rejection); Guest's
+`is_favorite` always `false` with no auth needed; a different user's
+`is_favorite`/`get_listing.is_favorite` correctly shows `false` for a
+listing someone else favorited; `get_my_favorites` never includes another
+user's favorite; `remove_favorite` on a listing the caller never favorited
+is a safe no-op (does not touch another user's real favorite of the same
+listing — tested explicitly: User A "removing" a favorite it never had
+does not affect User B's real favorite of the same listing); invalid
+listing id → clean 404, no traceback.
+
+---
+
+## 3. Favorites — Mobile
+
+**Architecture decision, and why:** rather than touching `RowCard.tsx`,
+`MiniCard` (home.tsx-local), and `detail/[id].tsx` individually,
+`store/useAppStore.ts`'s existing `toggleFavorite`/`isFavorite` — the
+**one** interface every consumer already calls — were made real-aware
+internally:
+- `isFavorite(id)` is **unchanged** — still a synchronous read of the
+  local `favorites` cache. What changed is *what keeps that cache
+  correct*: `services/listingService.ts`'s `adaptListing`/`adaptSummary`
+  now carry the backend's `is_favorite` through as `Listing.isFavoriteOnServer`,
+  and a new `hooks/useSeedFavoriteCache.ts` (called from `home.tsx`,
+  `results.tsx`, `favorites.tsx`, `detail/[id].tsx` — everywhere a real
+  `Listing[]`/`Listing` gets fetched) writes that truth into the shared
+  cache via a new `setFavoriteCache` store action. This hook exists
+  specifically to avoid an import cycle: `listingService.ts` cannot import
+  `useAppStore.ts` directly, because `useAppStore.ts` already needs to
+  import `services/favoritesService.ts` for the real toggle below — the
+  hook breaks that cycle by living at the screen layer instead (same
+  cycle-avoidance pattern `lib/apiClient.ts`'s own header comment already
+  documents for a different pair of modules).
+- `toggleFavorite(id)` — for a mock/service id, **byte-for-byte
+  unchanged**. For a real listing id: optimistically flips the local
+  cache immediately (heart re-colors with no perceptible delay, matching
+  the pre-existing instant UX), calls `ensureCredentials()` then
+  `addFavorite()`/`removeFavorite()` in the background, and **reverts the
+  optimistic flip if the result isn't `success`** — for any failure
+  reason (no internet, backend down, credential failure), not just a
+  generic catch-all. No toast/alert on rollback (a deliberate, disclosed
+  choice — the silent self-correction matches how most production apps
+  handle a failed heart-tap; the "no fake success" requirement is met by
+  the state reverting to the truth, not by an intrusive notification).
+
+**Result: zero code changes needed in `RowCard.tsx` or `home.tsx`'s
+`MiniCard`** — both already called `toggleFavorite`/`isFavorite` and now
+correctly handle real listings without modification. `app/detail/[id].tsx`
+needed only the seeding hook call, not any change to its favorite button
+logic.
+
+**`app/favorites.tsx`** — real favorited listings now come from
+`getMyFavorites()` (server is the source of truth, not a `filter()` over
+the local mock store, which could never have contained a real listing in
+the first place). Merged with the existing local mock-listing and
+service-favorite logic, unchanged. A small inline retry row appears if the
+real fetch fails, without blocking whatever local content still exists.
+
+**Persistence verified across the required scenarios:**
+- **App restart / device refresh:** `favorites` itself persists via the
+  store's existing `AsyncStorage`-backed `persist` middleware (unchanged,
+  pre-existing) as a fast local cache; the seeding hook re-confirms it
+  against the server on every fetch, so a stale local flag left over from
+  before a restart gets corrected, not just trusted.
+- **Logout/login (different session, e.g. reinstall or a second device):**
+  the local cache starts empty, but the seeding hook corrects it to the
+  server truth as soon as any real listing is fetched (detail view, or any
+  list) — this is the actual point of seeding from the server rather than
+  only trusting the optimistic local flip.
+- **Navigation away/back:** unaffected — the cache is a global Zustand
+  store, not screen-local state.
+
+**One disclosed, minor UX characteristic:** unfavoriting a listing from
+*inside* `app/favorites.tsx` itself flips its heart correctly but doesn't
+instantly remove the row from that screen's list until the screen is
+revisited (a fresh `useApiResult` fetch happens on remount) — not a
+correctness bug (the heart's own state is always accurate), a live-list-
+membership nicety not implemented this pass.
+
+---
+
+## 4. Saved Searches — Real Backend
+
+**DocType: `Souq Masr Saved Search`** — persists the actual search
+**definition**, not a snapshot of matching listing ids (so a saved search
+still works correctly against listings created after it was saved, as the
+request required): `label`, `query`, `category` (Link), `condition`
+(Select, same options as Listing's), `field_filters` (JSON-encoded Small
+Text — matches the mobile's own opaque `Record<string,string>` shape,
+deliberately not normalized into rows since it's criteria, not queryable
+data). **Schema-ready, not yet populated by the mobile app** (confirmed
+in §1's audit that no UI collects them yet): `location` (Link),
+`min_price`/`max_price` (Currency), `sort` (Select, same 6 keys as
+`results.tsx`'s `SortKey`).
+
+**Permissions:** same private-by-default shape as Favorites — `All`
+create-only plus `if_owner`-scoped read/write/delete, no Guest row.
+
+**API (`souq_masr/api/v1/saved_searches.py`):**
+- `create_saved_search(...)` — auth required, validates `category`/
+  `location` references. **Duplicate prevention**: queries the caller's
+  own saved searches for an exact match across every criteria field
+  (including a `sort_keys=True`-normalized `field_filters` JSON string
+  comparison) and returns the existing row idempotently rather than
+  inserting a duplicate — server-side now, not a client pre-check (the
+  old `results.tsx` computed `alreadySavedIdentical` locally; that
+  computation is gone, replaced by trusting the server's own dedup, which
+  is the actual authority now).
+- `get_my_saved_searches()` — auth required, newest-first.
+- `delete_saved_search(saved_search_id)` — auth + ownership required.
+- No `update_saved_search` — the current UI never edits an existing saved
+  search (only creates/deletes), so none was built (no unused/fake
+  endpoint).
+
+**Security tests, live-verified (§8):** Guest blocked on create/get (403);
+duplicate identical search (Arabic query, same category/condition/
+field_filters) returns the *same* id, confirmed no second row created;
+User B sees zero of User A's saved searches; User B cannot delete User
+A's saved search (403); deleting an already-deleted saved search is a
+clean 404, not a crash; Arabic and English query text both round-trip
+correctly; an empty query string is accepted (the UI's own "no text,
+category-only" saved search case).
+
+---
+
+## 5. Saved Searches — Mobile
+
+**`app/results.tsx`** — `saveSearch()` now calls `createSavedSearch()`
+directly; the local `alreadySavedIdentical` pre-check (and its dedicated
+`results.alreadySaved` label) was removed entirely — the server's own
+idempotent dedup is the real, sole mechanism now (disclosed trade-off: the
+save button no longer visually greys out in advance for an identical
+search already saved in a *previous session*, since that would require
+fetching the full saved-search list just to render the button; pressing
+it is still always safe — it can never create a duplicate row). Added a
+`saving` loading state (spinner in place of the heart icon) and a real
+success/failure `Alert` — no silent, assumed success.
+
+**`app/saved-searches.tsx`** — list and delete now come from
+`getMySavedSearches()`/`deleteSavedSearch()` (`ApiStateView` for loading/
+error, a small per-row spinner while deleting). **Restore bug fixed**:
+tapping a saved search now passes `condition` and `filters` (JSON-encoded
+`fieldFilters`) as additional query params to `/results`, alongside the
+existing `category`/`q` — `results.tsx`'s `useState` initializers for
+`conditionFilter`/`fieldFilters` read them on first render, so a restored
+search now reapplies **every** criterion it was saved with, not just
+category and text.
+
+**Functional sequence verified** (live HTTP, mirroring the mobile wire
+format — Arabic query "آيفون", category, condition, and a
+`field_filters` object all specified together): create → appears in
+`get_my_saved_searches` → delete → gone. Restore's correctness was
+verified at the data level (the saved criteria round-trip through
+create→get exactly, and `results.tsx`'s param-reading code was reviewed
+directly against the exact query-string shape `saved-searches.tsx` now
+builds); the actual on-device navigation was not run in this environment,
+consistent with every prior round's disclosed methodology limitation.
+
+---
+
+## 6. Report Listing — Real Backend
+
+**DocType: `Souq Masr Listing Report`** — `listing` (Link, required),
+`reason` (Select, validated against the same 8-value `ReportReason` enum
+the mobile app already defines — `fake/scam/wrong_category/duplicate/
+prohibited/spam/abusive_seller/incorrect_info`, not a new list),
+`description` (optional Small Text, schema-ready, not yet collected by
+the report-reason-picker UI), `status` (`Open/Reviewed/Dismissed`,
+default `Open` — exists only so the record is safely storable/triageable
+later; **no admin moderation UI was built this slice**, per explicit
+instruction).
+
+**Permissions — the most restrictive of the three new DocTypes,
+deliberately:** `All` role gets `create=1` and **nothing else** — no
+`read`, `write`, or `delete` at all, not even `if_owner`-scoped. A normal
+user cannot read back a report's content (their own or anyone else's)
+through *any* Frappe mechanism, generic or custom — satisfying "do not
+expose reporter identity to other normal users" and "a normal user must
+not be able to edit/delete another user's report" as a structural
+guarantee, not just an unimplemented endpoint. `has_reported()`'s boolean
+check (below) works anyway because it's a raw `frappe.db.exists()` call,
+which bypasses DocType read permissions entirely — the same technique
+`is_favorite`/ownership checks already use elsewhere in this codebase.
+
+**API (`souq_masr/api/v1/reports.py`):**
+- `report_listing(listing_id, reason, description=None)` — auth required,
+  listing must exist and be public, `reason` validated against the known
+  enum (clean `validation_error` otherwise, not a raw exception).
+  **Duplicate-abuse prevention**: idempotent-return on a second report of
+  the same listing by the same user (same id returned, no second row,
+  regardless of a different `reason` on the retry) — mirrors
+  `add_favorite`'s pattern exactly.
+- `has_reported(listing_id)` — auth required, returns only a boolean.
+  Exists because the mobile UI needs to know "have I already reported
+  this" *after an app restart* too, not just within one session — without
+  it, the report button's "already reported" state would have had no way
+  to survive past the current app session for a real listing.
+
+**A real bug found and fixed** (discovered directly by this slice's own
+testing, not assumed): `delete_listing` (built in Slice 1) raised an
+unhandled `LinkExistsError` whenever the listing being deleted had **any**
+associated Favorite or Report row — Frappe's default link-integrity check
+blocks deleting a document that's still referenced by a `Link` field
+elsewhere. Reproduced live (favorited + reported a listing, then called
+`delete_listing` as its owner → 500-shaped failure), then fixed by
+switching from `doc.delete()` to `frappe.delete_doc(..., force=1,
+ignore_permissions=True)` — `force=1` skips the link-integrity block
+without touching the linked rows themselves, so a Report **survives** as
+an orphaned audit-trail row (the right behavior — a report shouldn't
+vanish just because the reported listing was later taken down), while an
+orphaned Favorite is silently excluded by `get_my_favorites`'s own
+pre-existing `if lid in rows_by_id` guard (no crash, no dangling
+reference exposed to the client). Re-verified live after the fix: delete
+now succeeds with both a linked favorite and a linked report present, and
+the full Slice 3 regression suite was re-run afterward with zero new
+failures.
+
+---
+
+## 7. Report Listing — Mobile
+
+**`app/detail/[id].tsx`** — for a mock listing, `openReport`/the report
+button are **byte-for-byte unchanged** (still the local `reportListing`/
+`hasReported` store actions). For a real listing: a `hasReported()` check
+runs once when the real listing loads (seeding a `realReported` local
+state, mirroring the favorite-cache-seeding pattern conceptually but kept
+local to this one screen since report status is never shown on any list
+card, only this one button); selecting a reason now `await`s
+`reportListingReal()` and shows the "شكرًا" thank-you alert **only after**
+a real success — the old code showed that alert unconditionally,
+immediately after firing the local store action, which for a real listing
+would have been exactly the "fake reported successfully response" the
+request explicitly forbids. A failure now shows a real "تعذّر إرسال
+البلاغ" alert instead.
+
+---
+
+## 8. Live HTTP Tests
+
+All against the real, live server (`187.7.19.136`), two rounds — direct
+raw-payload calls, then a round mirroring the mobile services' exact wire
+format (JSON-encoded `field_filters` nested in the outer JSON body, GET
+with query-string params exactly as `frappeGet` builds them) — same
+disclosed methodology as every prior round.
+
+```
+=== FAVORITES ===
+OK  Guest: add/remove/get_my_favorites all 403 (Frappe's own guest-rejection)
+OK  Guest: is_favorite always false, no auth needed
+OK  add_favorite -> 200, is_favorite=true
+OK  duplicate add_favorite -> same favorite id, no new row
+OK  is_favorite differs correctly per viewer (favoriter=true, listing owner=false)
+OK  get_listing embeds is_favorite correctly per-viewer (guest=false, favoriter=true)
+OK  get_my_favorites includes the listing; a different user's list does not
+OK  User A "removing" a favorite it never had is a safe no-op AND does not
+    touch User B's real favorite of the same listing
+OK  repeated remove_favorite is safely idempotent
+OK  invalid listing id -> clean 404, no traceback
+OK  is_favorite correctly flips in search_listings' own list response
+    immediately after favoriting (batched query, verified via a dedicated
+    before/after/guest-view test)
+
+=== SAVED SEARCHES ===
+OK  Guest: create/get both 403
+OK  create with Arabic query ("آيفون") + category + condition + field_filters
+OK  create with English label, empty query string (UI-allowed case)
+OK  duplicate identical search -> same id returned, no second row
+OK  get_my_saved_searches shows exactly the 2 distinct ones, not 3
+OK  a different user sees zero of them
+OK  User B cannot delete User A's saved search -> 403
+OK  User A deletes own -> 200; repeated delete -> clean 404
+
+=== REPORTS ===
+OK  Guest cannot report -> 403
+OK  invalid reason -> clean validation_error, no traceback
+OK  invalid listing id -> clean 404
+OK  valid report -> 200
+OK  has_reported correct per-user (reporter=true, others=false)
+OK  repeated report (different reason) -> idempotent, same report id, no 2nd row
+OK  Guest cannot check has_reported (requires identity) -> 403
+
+=== BUG FOUND + FIXED: delete_listing + linked Favorite/Report ===
+OK  (before fix) delete_listing on a favorited+reported listing failed
+    (LinkExistsError, reproduced directly)
+OK  (after fix) delete_listing succeeds with both a linked favorite and a
+    linked report present; report row survives (audit trail intact)
+OK  full Slice 3 regression suite re-run after the fix -> 0 new failures
+
+======================================================================
+ALL SLICE 3 ASSERTIONS PASSED (round 1: 3 domains x multiple groups;
+round 2 mirror: 6 groups covering all 3 domains' exact mobile wire format)
+```
+
+**Honest methodology note** (same disclosure as every prior round): the
+optimistic-update-plus-rollback logic in `store/useAppStore.ts`'s
+`toggleFavorite`, the seeding hook's cross-screen behavior, and the
+report/save-search UI flows have **not** been exercised inside an actual
+device/simulator session in this environment (none is available here).
+`tsc --noEmit` and `expo export` (§9) confirm the code as written compiles
+and bundles; the backend contract every one of these call sites depends on
+has been independently, thoroughly live-tested above, including the exact
+double-JSON-encoded wire format the real service files produce.
+
+## 9. Mobile Build Results
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | Clean, 0 errors |
+| `npx expo export --platform ios` | Succeeded, bundled with no errors |
+
+## 10. Data Integrity (Section 9 of the request)
+
+| Scenario | Result |
+|---|---|
+| Duplicate favorite insertion | Idempotent — returns existing row, no duplicate created |
+| Repeated favorite removal | Idempotent — safe no-op |
+| Duplicate saved search (identical criteria) | Idempotent — returns existing row, no duplicate created |
+| Deleting an already-deleted saved search | Clean 404, not a crash |
+| Reporting the same listing repeatedly | Idempotent — returns existing report, no duplicate row, regardless of a different reason on retry |
+| Deleted/nonexistent listing referenced by a Favorite or Report | `get_my_favorites` silently excludes it (pre-existing guard, confirmed still correct); a Report row itself is preserved as an orphaned audit-trail record by design (see the delete_listing fix, §6) |
+
+## 11. Mock Dependencies Removed vs. Remaining
+
+**Removed this slice** (real backend is now the sole source for these
+specific flows): `app/results.tsx`'s local `alreadySavedIdentical`
+computation and `addSavedSearch` call; `app/saved-searches.tsx`'s reads
+of `store.savedSearches` and its `removeSavedSearch` call;
+`app/detail/[id].tsx`'s unconditional-success report flow for real
+listings; `app/favorites.tsx`'s listing source for real listings
+(`allListings`'s local filter → `getMyFavorites()`).
+
+**Still mocked, explicitly, and why:**
+- `store/useAppStore.ts`'s `favorites` Record, `savedSearches` array, and
+  `reports` array are **not deleted** — `favorites` still backs Services'
+  favorite button unchanged (a different domain, untouched by design);
+  `savedSearches`/`reports` arrays are simply no longer read by the two
+  screens that used to read them, kept in the store as-is (no call site
+  left depends on them, but removing dead state isn't required by "remove
+  mock dependency only where the real backend equivalent is complete" —
+  it's inert, not a lie to the user).
+- `app/detail/[id].tsx`'s favorite/report logic for **mock** listings —
+  fully unchanged, local, as designed.
+- `SavedSearch.location`/`minPrice`/`maxPrice`/`sort` — schema-ready
+  server-side, not populated (no UI collects them, §1/§4).
+- `Souq Masr Listing Report.description` — schema-ready, not collected by
+  the mobile report sheet (reason-picker only, unchanged UI).
+- Admin moderation of reports — explicitly out of scope this slice, not
+  evaluated.
+
+## 12. Bugs Found / Fixed This Slice
+
+One real bug, found by this slice's own testing before it could reach
+production use: `delete_listing`'s `LinkExistsError` when a Favorite or
+Report row references the listing being deleted — full description, root
+cause, and fix in §6. Live-verified fixed, full regression re-run clean.
+
+## 13. Blockers
+
+None.
+
+## 14. Decision
+
+# ✅ GO — for this vertical slice specifically (Favorites + Saved Searches + Reports)
+
+**Not a whole-Phase-2B GO.** Scoped exactly to what this slice covers.
+
+**Backend:** 3 new DocTypes (`Souq Masr Listing Favorite`, `Souq Masr
+Saved Search`, `Souq Masr Listing Report`), each with permission shapes
+matched to their actual privacy needs (Favorites/Saved Searches:
+`if_owner`-scoped private; Reports: create-only, no read path for anyone
+but Admin). 8 new endpoints across 3 new API modules
+(`favorites.py`/`saved_searches.py`/`reports.py`), all live-tested
+including ownership, duplicate-handling, and Guest-rejection. One
+cross-cutting backend addition (`is_favorite` embedded in every listing
+response, batched per page). One real bug found and fixed
+(`delete_listing` + linked rows).
+
+**Mobile:** 3 new service modules
+(`favoritesService.ts`/`savedSearchService.ts`/`reportService.ts`), one
+new hook (`useSeedFavoriteCache`), and a deliberate architecture choice
+(making the existing store actions real-aware internally) that let
+`RowCard.tsx` and `home.tsx`'s `MiniCard` — both pre-existing, both used
+across multiple screens — keep working with **zero code changes**.
+`app/favorites.tsx`, `app/saved-searches.tsx`, and `app/results.tsx`'s
+save-search flow now read/write the real backend; `app/detail/[id].tsx`'s
+report flow no longer fakes success for real listings; a genuine
+pre-existing bug (saved-search restore silently dropping condition/
+field-filters) was fixed alongside the migration.
+
+**Verified:** `tsc`/`expo export` clean; two rounds of live HTTP tests
+across all three domains including security (Guest rejection on every
+mutation and private read, cross-user isolation on favorites/saved
+searches, reporter-identity-never-exposed by permission structure, not
+just by unimplemented endpoints), data integrity (every duplicate/
+repeated/orphaned-reference scenario the request listed), and the exact
+mobile wire format.
+
+**No Chat/Reviews/Jobs/Services/Notifications/Payments code touched.** No
+Phase 2A/Slice 1/Slice 2 regression. No mock data deleted globally —
+`favorites`/`savedSearches`/`reports` remain in `store/useAppStore.ts`,
+`favorites` still actively backing Services.

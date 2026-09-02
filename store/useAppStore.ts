@@ -21,6 +21,9 @@ export type { ProductVariant };
 import { buildCurrentSeller, sellers as registeredSellers, type Seller } from '@/mock/users';
 import type { Condition, PriceType, SellingType } from '@/mock/taxonomy';
 import type { PendingSaleConfirmation, SaleMethod, SaleRecord } from '@/types/sale';
+import { ensureCredentials } from '@/services/authService';
+import { addFavorite as addFavoriteReal, removeFavorite as removeFavoriteReal } from '@/services/favoritesService';
+import { isRealListingId } from '@/services/listingService';
 
 // Phase 2B Slice 2: 'pending' كانت حالة وهمية أصلًا (addMyAd's تعليق —
 // إعلانات المستخدم بتبدأ 'active' على طول، مفيش بوابة مراجعة حقيقية
@@ -174,9 +177,18 @@ const emptyPostDraft: PostAdDraft = {
 
 type AppState = {
   // ---- favorites ----
+  // Phase 2B Slice 3: نفس الـRecord ده لسه المصدر المحلي لأي حاجة تانية
+  // بتستخدم toggleFavorite/isFavorite (خدمات، إعلانات mock) — بس
+  // لإعلان حقيقي (LST-#####)، toggleFavorite بقت بتنادي الباك إند
+  // الحقيقي فعليًا (services/favoritesService.ts) مع optimistic update +
+  // rollback عند الفشل، والـRecord ده بقى بيتحدّث (يتزرع/يتصحّح) من رد
+  // كل نداء API حقيقي بيرجّع is_favorite (services/listingService.ts's
+  // setFavoriteCache) — مش بيتوهم إنه "المصدر الحقيقي"، هو cache متزامن
+  // مع السيرفر، مش سلطة مستقلة.
   favorites: Record<string, true>;
   toggleFavorite: (listingId: string) => void;
   isFavorite: (listingId: string) => boolean;
+  setFavoriteCache: (listingId: string, isFav: boolean) => void;
 
   // ---- my ads ----
   myAds: MyAd[];
@@ -310,14 +322,40 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
   favorites: {},
-  toggleFavorite: (id) =>
+  toggleFavorite: (id) => {
+    if (isRealListingId(id)) {
+      const wasFav = !!get().favorites[id];
+      const nextFav = !wasFav;
+      // optimistic — القلب بيتلوّن فورًا، مش لما الشبكة ترجع.
+      get().setFavoriteCache(id, nextFav);
+      const onboarding = get().onboarding;
+      ensureCredentials(onboarding.name, onboarding.phone, onboarding.countryIso).then((credsResult) => {
+        if (credsResult.status !== 'success') {
+          get().setFavoriteCache(id, wasFav); // rollback — مفيش نجاح وهمي
+          return;
+        }
+        const action = nextFav ? addFavoriteReal(id) : removeFavoriteReal(id);
+        action.then((r) => {
+          if (r.status !== 'success') get().setFavoriteCache(id, wasFav); // rollback
+        });
+      });
+      return;
+    }
     set((s) => {
       const next = { ...s.favorites };
       if (next[id]) delete next[id];
       else next[id] = true;
       return { favorites: next };
-    }),
+    });
+  },
   isFavorite: (id) => !!get().favorites[id],
+  setFavoriteCache: (id, isFav) =>
+    set((s) => {
+      const next = { ...s.favorites };
+      if (isFav) next[id] = true;
+      else delete next[id];
+      return { favorites: next };
+    }),
 
   myAds: [],
   addMyAd: (ad) => {

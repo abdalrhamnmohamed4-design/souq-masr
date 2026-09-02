@@ -68,6 +68,14 @@ export type Listing = {
   // (useDiscoverableListings) بس يفضل موجود في الداتا نفسها لسجل
   // مبيعات البائع/الأدمن. مش بيتحذف أبدًا.
   saleStatus?: 'active' | 'sold';
+
+  // Phase 2B Slice 3: حالة "مفضّل" حقيقية من الباك إند (services/
+  // listingService.ts's adaptListing/adaptSummary) — undefined لإعلانات
+  // mock (مالهاش معنى، الـfavorites Record المحلي هو المصدر بالكامل
+  // ليها). لإعلان حقيقي، بتُستخدم بس لزرع/تصحيح نفس الـRecord المحلي
+  // (store/useAppStore.ts's setFavoriteCache عبر hooks/useSeedFavoriteCache.ts)
+  // — مش قناة عرض تانية موازية لـisFavorite(id).
+  isFavoriteOnServer?: boolean;
 };
 
 export const listings: Listing[] = [];

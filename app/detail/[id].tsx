@@ -13,6 +13,7 @@ import { Avatar } from '@/components/primitives/Avatar';
 import { Button } from '@/components/primitives/Button';
 import { Pill } from '@/components/primitives/Pill';
 import { useApiResult } from '@/hooks/useApiResult';
+import { useSeedFavoriteCache } from '@/hooks/useSeedFavoriteCache';
 import { getBrand } from '@/mock/taxonomy/brands';
 import { getCategory, getPath } from '@/mock/taxonomy/categories';
 import { getModel } from '@/mock/taxonomy/models';
@@ -20,12 +21,13 @@ import { SELLING_TYPE_LABELS } from '@/mock/taxonomy/types';
 import { BrandLogo } from '@/components/BrandLogo';
 import { formatListingPrice } from '@/lib/price';
 import { useRequireAuth } from '@/lib/auth';
-import type { ProductVariant } from '@/mock/listings';
+import type { Listing, ProductVariant } from '@/mock/listings';
 import {
   getListing as getRealListing,
   incrementListingViews as incrementListingViewsBackend,
   isRealListingId,
 } from '@/services/listingService';
+import { hasReported as hasReportedReal, reportListing as reportListingReal } from '@/services/reportService';
 import { useAppStore, useListingById, useSeller, type ReportReason } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -72,6 +74,20 @@ export default function Detail() {
   const listing = isReal ? (realState.kind === 'success' ? realState.data?.listing : undefined) : mockListing;
   const seller = isReal ? (realState.kind === 'success' ? realState.data?.seller : undefined) : mockSeller;
 
+  // بيزرع/يصحّح favorites cache المحلي من is_favorite الحقيقي (شوف
+  // hooks/useSeedFavoriteCache.ts) — عشان القلب يبان بحالته الصح من أول
+  // ما التفاصيل تحمّل، مش بس بعد أول toggle محلي.
+  useSeedFavoriteCache(React.useMemo<Listing[]>(() => (listing ? [listing] : []), [listing]));
+
+  const [realReported, setRealReported] = React.useState(false);
+  React.useEffect(() => {
+    if (!isReal || !listing) return;
+    hasReportedReal(listing.id).then((r) => {
+      if (r.status === 'success') setRealReported(r.data.hasReported);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReal, listing?.id]);
+
   React.useEffect(() => {
     setSelectedVariant(listing?.variants?.find((v) => v.stock > 0) ?? listing?.variants?.[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,9 +133,30 @@ export default function Detail() {
 
   const toggleFavGuarded = () => requireAuth(() => toggleFav(listing.id), { type: 'favorite_listing', listingId: listing.id });
 
+  const reported = isReal ? realReported : hasReported(listing.id);
+
+  const submitReport = (reason: ReportReason) => {
+    if (!isReal) {
+      // إعلان mock — محلي زي ما كان بالظبط.
+      reportListing(listing.id, reason);
+      Alert.alert('شكرًا', 'اتسجّل البلاغ وهنراجعه.');
+      return;
+    }
+    // إعلان حقيقي — مفيش "شكرًا" غير لما الباك إند فعليًا يرجّع نجاح
+    // (القسم 7 من الطلب: "Do NOT create a fake reported successfully response").
+    reportListingReal(listing.id, reason).then((r) => {
+      if (r.status !== 'success') {
+        Alert.alert('تعذّر إرسال البلاغ', 'حصلت مشكلة، جرّب تاني.');
+        return;
+      }
+      setRealReported(true);
+      Alert.alert('شكرًا', 'اتسجّل البلاغ وهنراجعه.');
+    });
+  };
+
   const openReport = () =>
     requireAuth(() => {
-      if (hasReported(listing.id)) {
+      if (reported) {
         Alert.alert('اتبلّغ عن الإعلان ده', 'شكرًا، البلاغ بتاعك اتسجّل وهيتراجع.');
         return;
       }
@@ -127,7 +164,7 @@ export default function Detail() {
         'بلّغ عن الإعلان',
         'اختار السبب',
         [
-          ...REPORT_REASONS.map((r) => ({ text: r.label, onPress: () => { reportListing(listing.id, r.key); Alert.alert('شكرًا', 'اتسجّل البلاغ وهنراجعه.'); } })),
+          ...REPORT_REASONS.map((r) => ({ text: r.label, onPress: () => submitReport(r.key) })),
           { text: 'إلغاء', style: 'cancel' as const },
         ],
       );
@@ -339,9 +376,9 @@ export default function Detail() {
 
         <View style={{ alignItems: 'center', paddingBottom: spacing.s6 }}>
           <Pressable onPress={openReport} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-            <Icon name="flag" size={14} color={hasReported(listing.id) ? colors.danger : colors.ink3} />
-            <Text style={{ fontSize: 11, color: hasReported(listing.id) ? colors.danger : colors.ink3 }}>
-              {hasReported(listing.id) ? 'اتبلّغ عن الإعلان ده' : 'بلّغ عن الإعلان ده'}
+            <Icon name="flag" size={14} color={reported ? colors.danger : colors.ink3} />
+            <Text style={{ fontSize: 11, color: reported ? colors.danger : colors.ink3 }}>
+              {reported ? 'اتبلّغ عن الإعلان ده' : 'بلّغ عن الإعلان ده'}
             </Text>
           </Pressable>
         </View>

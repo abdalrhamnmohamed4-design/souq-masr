@@ -25,6 +25,7 @@ import { LocationPicker } from '@/components/LocationPicker';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { ThumbPlaceholder } from '@/components/primitives/ThumbPlaceholder';
 import { combineApiResultList, useApiResult } from '@/hooks/useApiResult';
+import { useSeedFavoriteCache } from '@/hooks/useSeedFavoriteCache';
 import { useT } from '@/i18n';
 import { categoryLabel } from '@/mock/taxonomy/categories';
 import type { Listing } from '@/mock/listings';
@@ -104,6 +105,15 @@ export default function Home() {
 
   const { state: realEstateListingsState } = useApiResult(() => getListingsByCategory(REAL_ESTATE_PARENT_ID, 1, 10), []);
   const realEstateListings = realEstateListingsState.kind === 'success' ? realEstateListingsState.data.items : [];
+
+  // Phase 2B Slice 3: بيزرع/يصحّح favorites cache المحلي من is_favorite
+  // الحقيقي المتضمّن مع كل قسم — عشان قلوب MiniCard تبان بحالتها الصح من
+  // أول تحميل، مش بس بعد أول toggle محلي.
+  useSeedFavoriteCache(newest);
+  useSeedFavoriteCache(cheapest);
+  useSeedFavoriteCache(nearby);
+  useSeedFavoriteCache(carListings);
+  useSeedFavoriteCache(realEstateListings);
 
   const publishedJobsCount = useAllJobs().filter((j) => j.status === 'published').length;
   const activeServicesCount = useAllServices().filter((s) => s.status === 'active').length;

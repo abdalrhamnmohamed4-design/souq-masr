@@ -9,13 +9,14 @@
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
 import { RowCard } from '@/components/listing/RowCard';
 import { Button } from '@/components/primitives/Button';
 import { useApiResult } from '@/hooks/useApiResult';
+import { useSeedFavoriteCache } from '@/hooks/useSeedFavoriteCache';
 import { useT } from '@/i18n';
 import { useAppStore } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
@@ -29,6 +30,7 @@ import type { Listing } from '@/mock/listings';
 import { categoryLabel, fieldLabel } from '@/mock/taxonomy/categories';
 import { getCategory } from '@/services/taxonomyService';
 import { searchListings } from '@/services/listingService';
+import { createSavedSearch } from '@/services/savedSearchService';
 import { useRequireAuth } from '@/lib/auth';
 import { CONDITION_LABELS, conditionLabel, type CategoryField, type Condition } from '@/mock/taxonomy/types';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -45,7 +47,16 @@ const SORT_TKEY: Record<SortKey, string> = {
 };
 
 export default function Results() {
-  const { category: categoryId, q } = useLocalSearchParams<{ category?: string; q?: string }>();
+  // condition/filters: بارامترز اختياريين — لو /saved-searches بيرجّع
+  // بحث محفوظ بمعايير أكتر من category/q بس، بيتبعتوا هنا عشان يترجعوا
+  // صح (إصلاح: قبل كده كان conditionFilter/fieldFilters بيتفقدوا صامتين
+  // عند الاسترجاع — القسم 5 من الطلب: "Do not silently drop filters").
+  const { category: categoryId, q, condition: restoredCondition, filters: restoredFiltersJson } = useLocalSearchParams<{
+    category?: string;
+    q?: string;
+    condition?: string;
+    filters?: string;
+  }>();
   const router = useRouter();
   const t = useT();
   const language = useLanguageStore((s) => s.language);
@@ -57,9 +68,16 @@ export default function Results() {
   const [sort, setSort] = useState<SortKey>('newest');
   const [query, setQuery] = useState(q ?? '');
   const [debouncedQuery, setDebouncedQuery] = useState(q ?? '');
-  const [conditionFilter, setConditionFilter] = useState<Condition | null>(null);
-  const [fieldFilters, setFieldFilters] = useState<Record<string, string>>({});
-  const addSavedSearch = useAppStore((s) => s.addSavedSearch);
+  const [conditionFilter, setConditionFilter] = useState<Condition | null>((restoredCondition as Condition) ?? null);
+  const [fieldFilters, setFieldFilters] = useState<Record<string, string>>(() => {
+    if (!restoredFiltersJson) return {};
+    try {
+      return JSON.parse(restoredFiltersJson);
+    } catch {
+      return {};
+    }
+  });
+  const [saving, setSaving] = useState(false);
   const requireAuth = useRequireAuth();
 
   const { state: categoryState, refetch: refetchCategory } = useApiResult(
@@ -118,6 +136,12 @@ export default function Results() {
   const baseItems = searchState.kind === 'success' ? searchState.data.items : [];
   const totalResults = searchState.kind === 'success' ? searchState.data.total : 0;
 
+  // Phase 2B Slice 3: بيزرع/يصحّح favorites cache المحلي — من baseItems/
+  // additionalItems الثابتين (مش results, اللي بيتبني من جديد كل render
+  // بسبب إعادة الترتيب client-side لـnearest/favoritesFirst).
+  useSeedFavoriteCache(baseItems);
+  useSeedFavoriteCache(additionalItems);
+
   let results = [...baseItems, ...additionalItems];
   if (sort === 'nearest') results = [...results].sort((a, b) => Number(b.city === myCity) - Number(a.city === myCity));
   else if (sort === 'favoritesFirst') results = [...results].sort((a, b) => Number(!!favorites[b.id]) - Number(!!favorites[a.id]));
@@ -154,25 +178,25 @@ export default function Results() {
     })),
   ];
 
-  const savedSearches = useAppStore((s) => s.savedSearches);
-  const alreadySavedIdentical = savedSearches.some(
-    (s) =>
-      s.categoryId === (category?.id ?? null) &&
-      s.query === query.trim() &&
-      s.conditionFilter === conditionFilter &&
-      JSON.stringify(s.fieldFilters) === JSON.stringify(fieldFilters),
-  );
-
+  // منع تكرار نفس معيار البحث بقى مسؤولية السيرفر (souq_masr.api.v1.
+  // saved_searches.create_saved_search's idempotent-return) — مش فحص
+  // محلي هنا قبل الحفظ، عشان مصدر الحقيقة يبقى واحد.
   const saveSearch = () =>
-    requireAuth(() => {
-      if (alreadySavedIdentical) return; // منع تكرار نفس معيار البحث (PART QA-fix)
-      addSavedSearch({
+    requireAuth(async () => {
+      setSaving(true);
+      const r = await createSavedSearch({
         label: query.trim() ? `"${query.trim()}" — ${categoryDisplayName}` : categoryDisplayName,
-        categoryId: category?.id ?? null,
+        category: category?.id ?? null,
         query: query.trim(),
-        conditionFilter,
+        condition: conditionFilter,
         fieldFilters,
       });
+      setSaving(false);
+      if (r.status !== 'success') {
+        Alert.alert('تعذّر حفظ عملية البحث', 'حصلت مشكلة، جرّب تاني.');
+        return;
+      }
+      Alert.alert('تم الحفظ', 'تقدر تلاقي عملية البحث دي في "عمليات البحث المحفوظة".');
     });
 
   return (
@@ -302,13 +326,17 @@ export default function Results() {
             </ScrollView>
             <Pressable
               onPress={saveSearch}
-              disabled={alreadySavedIdentical}
-              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, marginHorizontal: spacing.s5, opacity: alreadySavedIdentical ? 0.6 : 1 }}
+              disabled={saving}
+              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, marginHorizontal: spacing.s5, opacity: saving ? 0.6 : 1 }}
             >
-              <Icon name="heart" size={14} color={colors.signal} />
-              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.signal }}>
-                {alreadySavedIdentical ? t('results.alreadySaved') : t('results.saveSearch')}
-              </Text>
+              {saving ? (
+                <ActivityIndicator size="small" color={colors.signal} />
+              ) : (
+                <>
+                  <Icon name="heart" size={14} color={colors.signal} />
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: colors.signal }}>{t('results.saveSearch')}</Text>
+                </>
+              )}
             </Pressable>
             <View style={{ flexDirection: 'row', gap: spacing.s2, paddingHorizontal: spacing.s5, paddingTop: spacing.s3, borderTopWidth: 1, borderTopColor: colors.line }}>
               <Button variant="ghost" size="sm" style={{ flex: 0, width: 110 }} onPress={() => { setConditionFilter(null); setFieldFilters({}); setSort('newest'); }}>

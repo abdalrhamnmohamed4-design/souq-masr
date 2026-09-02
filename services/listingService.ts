@@ -57,6 +57,7 @@ type RawListing = {
   updated_at: string;
   seller: RawSeller;
   is_owner: boolean;
+  is_favorite: boolean;
 };
 
 /** الحالة الحقيقية زي ما هي على الباك إند بالظبط — مش mock/listings.ts's
@@ -78,6 +79,7 @@ type RawListingSummary = {
   views: number;
   status: RealListingStatus;
   created_at: string;
+  is_favorite: boolean;
 };
 
 type RawListPage<T> = { items: T[]; total: number; page: number; limit: number };
@@ -168,12 +170,16 @@ async function adaptListing(raw: RawListing): Promise<{ listing: Listing; seller
     discountPrice: raw.discount_price ?? undefined,
     discountEndsAt: raw.discount_ends_at ?? undefined,
     saleStatus: raw.status === 'Sold' ? 'sold' : 'active',
+    isFavoriteOnServer: raw.is_favorite,
   };
 
   return { listing, seller: adaptSeller(raw.seller), isOwner: raw.is_owner };
 }
 
-function adaptSummary(raw: RawListingSummary): Listing {
+/** مُصدَّرة (مش خاصة بالملف ده) — services/favoritesService.ts's
+ * getMyFavorites بتعيد استخدامها بدل ما تكرر نفس التحويل، نفس شكل رد
+ * get_my_favorites تمامًا (نفس RawListingSummary). */
+export function adaptSummary(raw: RawListingSummary): Listing {
   return {
     id: raw.id,
     title: raw.title,
@@ -194,6 +200,7 @@ function adaptSummary(raw: RawListingSummary): Listing {
     photoUris: raw.thumb ? [absoluteUrl(raw.thumb)] : undefined,
     priceType: raw.price_type,
     saleStatus: raw.status === 'Sold' ? 'sold' : 'active',
+    isFavoriteOnServer: raw.is_favorite,
   };
 }
 

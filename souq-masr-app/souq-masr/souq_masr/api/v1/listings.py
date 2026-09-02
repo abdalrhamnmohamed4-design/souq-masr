@@ -140,15 +140,44 @@ def _serialize(doc):
 		"updated_at": str(doc.modified),
 		"seller": _seller_public_info(doc.owner),
 		"is_owner": frappe.session.user == doc.owner,
+		"is_favorite": _is_favorited_by_current_user(doc.name),
 	}
 
 
-def _serialize_summary(row):
+def _is_favorited_by_current_user(listing_id):
+	"""فحص مباشر (frappe.db.exists) مش import من favorites.py — استيراد
+	عكسي كان هيسبب دورة (favorites.py أصلًا بتعمل import من listings.py
+	لـ_serialize_summary/PUBLIC_STATUSES). Guest دايمًا False من غير ما
+	يحتاج نداء قاعدة بيانات أصلًا."""
+	if frappe.session.user == "Guest":
+		return False
+	return bool(frappe.db.exists("Souq Masr Listing Favorite", {"listing": listing_id, "owner": frappe.session.user}))
+
+
+def _favorited_ids_for_current_user(listing_ids):
+	"""نداء واحد يجيب كل مفضّلات المستخدم الحالي من ضمن المجموعة دي —
+	مش نداء frappe.db.exists لكل صف لوحده (N+1) في أي قايمة نتايج."""
+	if frappe.session.user == "Guest" or not listing_ids:
+		return set()
+	return set(
+		frappe.get_all(
+			"Souq Masr Listing Favorite",
+			filters={"owner": frappe.session.user, "listing": ["in", listing_ids]},
+			pluck="listing",
+		)
+	)
+
+
+def _serialize_summary(row, favorited_ids=None):
 	"""نسخة مختصرة لقوايم النتائج (search/public/by_category/by_location) —
 	من غير attributes/images الكاملة، زي أي endpoint تجميعي تاني في
-	المشروع (get_children's summary vs get_category's detail)."""
+	المشروع (get_children's summary vs get_category's detail).
+	favorited_ids: set محسوبة مرة واحدة لكل الصفحة (شوف
+	_favorited_ids_for_current_user) — None يعني "مفيش سياق مفضّلة"
+	(get_my_favorites بيمرّر True مباشرة، كل عنصر فيها مفضّل بالتعريف)."""
 	governorate, district = _resolve_location_display(row.location) if row.location else ("", None)
 	thumb = frappe.db.get_value("Souq Masr Listing Image", {"parent": row.name}, "image", order_by="idx asc")
+	is_favorite = True if favorited_ids is True else (row.name in favorited_ids if favorited_ids is not None else False)
 	return {
 		"id": row.name,
 		"title": row.title,
@@ -162,6 +191,7 @@ def _serialize_summary(row):
 		"views": cint(row.views),
 		"status": row.status,
 		"created_at": str(row.creation),
+		"is_favorite": is_favorite,
 	}
 
 
@@ -360,7 +390,14 @@ def delete_listing(listing_id):
 	user = _current_user()
 	doc = _get_listing_or_404(listing_id)
 	_assert_owner(doc, user)
-	doc.delete()
+	# force=1: من غير كده Frappe بيرفض الحذف بـLinkExistsError لو فيه أي
+	# Souq Masr Listing Favorite أو Souq Masr Listing Report بيشاور على
+	# الإعلان ده (اكتُشفت الحالة دي فعليًا وقت اختبار Phase 2B Slice 3 —
+	# Report لازم يفضل موجود كسجل حتى لو الإعلان اتشال بعد كده، مش يتحذف
+	# معاه). الملكية اتأكدت فوق بالفعل، فـignore_permissions هنا آمن —
+	# نفس المبدأ المتّبع في كل مكان تاني بالمشروع (فحص صريح في بايثون
+	# قبل أي عملية، مش الاعتماد على Frappe's engine بمفرده).
+	frappe.delete_doc("Souq Masr Listing", listing_id, force=1, ignore_permissions=True)
 	return {"deleted": True, "id": listing_id}
 
 
@@ -409,7 +446,8 @@ def get_my_listings(status=None, page=1, limit=PAGE_SIZE_DEFAULT):
 		limit_start=offset,
 		limit_page_length=limit,
 	)
-	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
+	favorited_ids = _favorited_ids_for_current_user([r.name for r in rows])
+	return {"items": [_serialize_summary(r, favorited_ids) for r in rows], "total": total, "page": page, "limit": limit}
 
 
 # ============================================================ reads (Guest allowed)
@@ -439,7 +477,8 @@ def get_public_listings(page=1, limit=PAGE_SIZE_DEFAULT, sort=None):
 		limit_start=offset,
 		limit_page_length=limit,
 	)
-	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
+	favorited_ids = _favorited_ids_for_current_user([r.name for r in rows])
+	return {"items": [_serialize_summary(r, favorited_ids) for r in rows], "total": total, "page": page, "limit": limit}
 
 
 @frappe.whitelist(allow_guest=True)
@@ -499,7 +538,8 @@ def search_listings(q=None, category_key=None, condition=None, field_filters=Non
 		limit_start=offset,
 		limit_page_length=limit,
 	)
-	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
+	favorited_ids = _favorited_ids_for_current_user([r.name for r in rows])
+	return {"items": [_serialize_summary(r, favorited_ids) for r in rows], "total": total, "page": page, "limit": limit}
 
 
 def _location_and_descendants(location_key):
@@ -529,7 +569,8 @@ def get_listings_by_location(location_key, page=1, limit=PAGE_SIZE_DEFAULT, sort
 		limit_start=offset,
 		limit_page_length=limit,
 	)
-	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
+	favorited_ids = _favorited_ids_for_current_user([r.name for r in rows])
+	return {"items": [_serialize_summary(r, favorited_ids) for r in rows], "total": total, "page": page, "limit": limit}
 
 
 @frappe.whitelist(allow_guest=True)
