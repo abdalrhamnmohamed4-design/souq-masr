@@ -26,6 +26,7 @@ souq_masr/api/v1/content_reports.py — 2 endpoints (integrated, Phase 2B Jobs �
 souq_masr/api/v1/professional_profiles.py — 4 endpoints (integrated, Phase 2B Services)
 souq_masr/api/v1/services.py         — 8 endpoints (integrated, Phase 2B Services — core loop wired; my-services/results/discovery mobile screens not yet migrated)
 souq_masr/api/v1/notifications.py    — 5 endpoints + internal notify() helper (integrated, Phase 2B Notifications — server-side + in-app center only, push transport not built, see below)
+souq_masr/api/v1/payments.py         — 8 endpoints (integrated, Phase 2B Payments — real manual-transfer + admin-review model, no gateway, see below)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -128,7 +129,7 @@ wallet remain unbuilt — none of those domains were touched this slice.
 | Saved searches sync (`store`'s `savedSearches`) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.saved_searches.{create_saved_search,get_my_saved_searches,delete_saved_search}` — `Souq Masr Saved Search` DocType, schema-ready `location`/`min_price`/`max_price`/`sort` fields not yet populated (no UI collects them). `app/results.tsx`/`app/saved-searches.tsx` wired; a pre-existing filter-restoration bug fixed alongside. | **Auth** | Done |
 | Block/unblock seller | ⏳ Not built | Auth | Low |
 | Notifications | ✅ **Built, live-tested, wired** — in-app center only, see Phase 2I below | Auth | Done (in-app), push pending |
-| Wallet (top-up, transfer, promote balance) | ⏳ Not built | Auth | Low (needs a real payment gateway decision first, not just an endpoint) |
+| Wallet (top-up, transfer) | ✅ **Built, live-tested, wired** — real manual-transfer + admin-review model (no gateway needed/invented), see Phase 2J below | Auth | Done (top-up/transfer); promote balance still deferred |
 
 ## Phase 2E — Chat
 
@@ -238,7 +239,28 @@ missed-call wait).
 | Real event triggers (message/missed-call/review/job-application/application-status/interview) | ✅ **Built, live-tested** — 6 real triggers wired directly into `chat.py`/`calls.py`/`reviews.py`/`job_applications.py`/`job_interviews.py`. | — (server-internal) | Done |
 | Device push transport (wake the phone while the app is closed) | ⛔ **Not built.** Needs on-device Expo push token registration, a token-storage DocType, and a server call to Expo's push API at each `notify()` call site — none of which can be meaningfully verified in this environment (same root constraint as LiveKit's voice audio: only testable on a real device). | Auth | High (next, once device-testable) |
 | Saved-search-match notifications | ⏳ Not built — needs a background/scheduled job scanning new listings against saved searches, a different mechanism than every other trigger here (all mutation side-effects) | Auth | Medium |
-| Payment notifications | ⏳ Not built — wired the moment a real Payments backend exists; `notify()` is ready to receive that call | Auth | Medium |
+| Payment notifications | ✅ **Built, wired** — a real Payments backend now exists (Phase 2J below); `payment_confirmed` fires on top-up approval and on receiving a transfer | Auth | Done |
+
+## Phase 2J — Payments
+
+**New this pass:** the real backend for this product's actual payment
+model — manual transfer to admin-managed numbers + admin review for
+top-ups, real-time wallet-to-wallet transfer. **No payment gateway
+(Paymob/Stripe/etc.) exists anywhere in this codebase** — none was ever
+configured before this pass and none was invented, per this slice's own
+explicit instruction. See `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase
+2B Payments section for the full audit (including a real "fake payment
+succeeded" anti-pattern found in the pre-existing mock code and fixed),
+the security design, and the full live HTTP test results (15 groups).
+
+| Feature | Status | Auth | Priority |
+|---|---|---|---|
+| Payment numbers (admin-managed, shown to payers) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.payments.get_active_payment_numbers`. `app/pay.tsx` now shows real numbers instead of an always-empty mock list. No admin-dashboard UI to manage them (Frappe desk UI only, matching this project's consistent precedent). | Guest-safe data, Auth to view | Done |
+| Wallet balance | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.payments.get_my_wallet` — real per-user balance, mutated only by trusted server-side code, never a client-writable field. `app/transfer.tsx`/`app/(tabs)/profile.tsx` wired. | Auth | Done |
+| Top-up request (claim + admin review) | ✅ **Built, live-tested, wired.** `create_topup_request` always starts `Pending` — the wallet is credited only by `approve_payment_request` (Admin-role-gated, idempotent). `app/pay.tsx`/`app/paypending.tsx` wired; the old instant-fake-credit mock behavior is gone. | Auth (create) / Admin (approve/reject) | Done |
+| Wallet-to-wallet transfer | ✅ **Built, live-tested, wired.** `transfer_balance` — real-time, atomic, server-validated balance (not client-trusted). `app/transfer.tsx`/`app/paypending.tsx` wired. | Auth | Done |
+| Ad promotion spending (`promote/[id].tsx`, `promoBalance`) | ⏳ Not built — depends on a real "featured listing" capability that doesn't exist in Listings yet; stays fully mock, documented as a dependency, not silently skipped | Auth | Low (blocked on a Listings feature, not a Payments gap) |
+| Payment gateway (cards, automated mobile-wallet confirmation, etc.) | — Not applicable — this product's actual design is manual-transfer + admin review, not a gateway checkout; adding one later is a distinct future product decision requiring the requester's own provider choice and credentials | — | — |
 
 ---
 

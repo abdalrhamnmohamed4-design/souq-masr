@@ -1,15 +1,24 @@
 /**
  * app/paypending.tsx — جديدة، نمط .empty + .expiry banner من #myads،
  * لحالة "بانتظار تأكيد الدفع" بعد أي عملية (تمييز/شحن/تحويل).
+ *
+ * Payments vertical (Phase 2B): topup/transfer دلوقتي حقيقيين دايمًا.
+ * "تم الدفع، تحقق الآن" بقى فعليًا بيبعت طلب حقيقي (topup) أو ينفّذ
+ * تحويل حقيقي فوري (transfer) — مش بيزوّد رصيد وهمي فورًا زي القديم.
+ * لـtopup تحديدًا: زرار "تحقق الآن" بيبقى معناه الحقيقي "سجّل طلبي"، مش
+ * "أكّد فورًا" — الرصيد الفعلي مش بيتزاد إلا لما أدمن حقيقي يوافق (شوف
+ * payments.py). promote لسه محلي بالكامل (خارج النطاق، مفيش نظام تمييز
+ * حقيقي في الإعلانات لسه).
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { ActivityIndicator, Alert, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Icon } from '@/components/Icon';
 import { Button } from '@/components/primitives/Button';
 import { useAuthGuard } from '@/components/AuthGuard';
 import { useRequireOnline } from '@/lib/connectivityGuard';
+import { createTopupRequest, transferBalance } from '@/services/paymentService';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -21,12 +30,12 @@ const MESSAGES: Record<Purpose, { title: string; desc: (amount: string) => strin
     desc: (a) => `بعد ما تأكّد الدفع (${a} ج.م) هيتفعّل تمييز إعلانك فورًا.`,
   },
   topup: {
-    title: 'بانتظار تأكيد الدفع',
-    desc: (a) => `بعد ما تأكّد الدفع هيتضاف ${a} ج.م لرصيد إعلاناتك.`,
+    title: 'بانتظار مراجعة الدفع',
+    desc: (a) => `طلب شحن ${a} ج.م هيتراجع من فريقنا بعد ما نتأكد من التحويل، وهيتضاف للرصيد فور الموافقة.`,
   },
   transfer: {
-    title: 'بانتظار تأكيد التحويل',
-    desc: (a) => `بعد ما تأكّد هيتحوّل ${a} ج.م لصاحبك.`,
+    title: 'تحويل رصيد',
+    desc: (a) => `هيتحوّل ${a} ج.م لصاحبك فورًا.`,
   },
 };
 
@@ -34,8 +43,9 @@ export default function PayPending() {
   const params = useLocalSearchParams<{ purpose: Purpose; amount: string; adId?: string; planId?: string; toPhone?: string }>();
   const router = useRouter();
   const { colors, spacing } = useTheme();
-  const { promoteMyAd, topUp, transfer } = useAppStore();
+  const { promoteMyAd } = useAppStore();
   const requireOnline = useRequireOnline();
+  const [submitting, setSubmitting] = useState(false);
   const authBlock = useAuthGuard({ title: 'سجّل دخولك عشان تكمّل الدفع', description: 'العمليات المالية متاحة بس للمستخدمين المسجّلين.' });
   if (authBlock) return authBlock;
 
@@ -44,13 +54,36 @@ export default function PayPending() {
   const msg = MESSAGES[purpose];
 
   const confirm = () =>
-    requireOnline(() => {
-      if (purpose === 'promote' && params.adId) promoteMyAd(params.adId);
-      if (purpose === 'topup') topUp(purpose === 'topup' ? Number(amount) : 0);
-      if (purpose === 'transfer') transfer(Number(amount), params.toPhone ?? '');
+    requireOnline(async () => {
+      if (purpose === 'promote') {
+        if (params.adId) promoteMyAd(params.adId);
+        router.replace('/myads');
+        return;
+      }
 
-      if (purpose === 'promote') router.replace('/myads');
-      else router.replace('/profile');
+      setSubmitting(true);
+      if (purpose === 'topup') {
+        const r = await createTopupRequest(Number(amount));
+        setSubmitting(false);
+        if (r.status !== 'success') {
+          Alert.alert('تعذّر إرسال الطلب', 'حصلت مشكلة، جرّب تاني.');
+          return;
+        }
+        Alert.alert('اتسجّل طلب الشحن', 'هيتراجع من فريقنا وهيتضاف الرصيد فور الموافقة.');
+        router.replace('/profile');
+        return;
+      }
+
+      if (purpose === 'transfer') {
+        const r = await transferBalance(params.toPhone ?? '', Number(amount));
+        setSubmitting(false);
+        if (r.status !== 'success') {
+          Alert.alert('تعذّر التحويل', 'اتأكد إن الرقم صحيح ورصيدك كافي، وجرّب تاني.');
+          return;
+        }
+        router.replace('/profile');
+        return;
+      }
     });
 
   return (
@@ -76,13 +109,10 @@ export default function PayPending() {
         {msg.desc(amount)}
       </Text>
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.signalWash, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, alignSelf: 'center', marginTop: spacing.s4 }}>
-        <Icon name="clock" size={13} color={colors.signal2} />
-        <Text style={{ fontSize: 10, color: colors.signal2, fontVariant: ['tabular-nums'] }}>معلّق منذ لحظات</Text>
-      </View>
-
       <View style={{ marginTop: spacing.s6, gap: spacing.s2 }}>
-        <Button onPress={confirm}>تم الدفع، تحقق الآن</Button>
+        <Button disabled={submitting} onPress={confirm}>
+          {purpose === 'transfer' ? 'تأكيد التحويل' : purpose === 'topup' ? 'حوّلت المبلغ، سجّل طلبي' : 'تم الدفع، تحقق الآن'}
+        </Button>
         <Button variant="ghost" onPress={() => router.back()}>
           إلغاء والرجوع
         </Button>

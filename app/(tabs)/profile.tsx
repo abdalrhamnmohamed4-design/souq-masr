@@ -5,7 +5,7 @@
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Image, Linking, Pressable, Share, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { Icon, type IconName } from '@/components/Icon';
@@ -17,6 +17,7 @@ import { Card } from '@/components/primitives/Card';
 import { IconButton } from '@/components/primitives/IconButton';
 import { Pill } from '@/components/primitives/Pill';
 import { useFabScrollHandler } from '@/lib/scrollFab';
+import { getMyWallet } from '@/services/paymentService';
 import { useAppStore, useSeller } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -74,8 +75,19 @@ export default function Profile() {
   const router = useRouter();
   const { colors, spacing, radius, brandDark } = useTheme();
   const myAds = useAppStore((s) => s.myAds);
-  const adsBalance = useAppStore((s) => s.adsBalance);
+  const mockAdsBalance = useAppStore((s) => s.adsBalance);
   const promoBalance = useAppStore((s) => s.promoBalance);
+  // Payments vertical (Phase 2B): رصيد الإعلانات الحقيقي (souq_masr.api.v1.
+  // payments.get_my_wallet) — بديل adsBalance's المحلي القديم بالكامل،
+  // مش دمج زي أنماط تانية، لأن السلوك المحلي القديم كان بالظبط النمط
+  // الخاطئ (رصيد وهمي بيتزوّد فورًا من غير تحقق) اللي الـslice دي بتصلحه.
+  const [realAdsBalance, setRealAdsBalance] = useState<number | null>(null);
+  useEffect(() => {
+    getMyWallet().then((r) => {
+      if (r.status === 'success') setRealAdsBalance(r.data.balance);
+    });
+  }, []);
+  const adsBalance = realAdsBalance ?? mockAdsBalance;
   const currentUser = useSeller('me')!;
   const verification = useAppStore((s) => s.verification);
   const setVerificationPhoto = useAppStore((s) => s.setVerificationPhoto);

@@ -3660,3 +3660,230 @@ One real Frappe framework behavior found and fixed via live testing
 (§3) — the kind of bug that would have silently sent every notification
 to the wrong user in production had it shipped unverified. No
 Payments code touched. No regression to any prior GO slice.
+
+---
+
+# Phase 2B — Payments
+
+**Scope, exactly:** the real, server-authoritative backend for this
+product's *actual* payment model — manual bank/mobile-wallet transfer to
+admin-managed receiving numbers, submitted as a claim, credited only on
+real admin approval — plus real-time wallet-to-wallet transfer. **No
+payment gateway (Paymob/Stripe/etc.) was integrated or invented,** per
+this slice's own explicit instruction; none was ever configured or
+referenced anywhere in this codebase before this slice, confirmed by
+searching for every plausible provider name before writing a single
+line.
+
+## 1. Audit — what this product's payment model actually is
+
+Read `app/pay.tsx`, `app/transfer.tsx`, `app/paypending.tsx`, `app/(tabs)/profile.tsx`'s
+wallet card, `mock/paymentNumbers.ts`, and `store/useAppStore.ts`'s
+`topUp`/`transfer`/`spendOnPromote`/`promoteMyAd` actions before writing
+any backend code.
+
+**This is not a checkout/gateway product.** `app/pay.tsx` shows the user
+admin-managed receiving numbers (Vodafone Cash/Orange Cash/Etisalat
+Cash/InstaPay/bank transfer — `mock/paymentNumbers.ts`'s exact shape),
+the user transfers money to one of them **outside the app** (there is no
+way to verify that programmatically without a gateway — by the
+product's own design, not a limitation of this slice), and then taps
+confirm. This is a manual-transfer-with-admin-review model, common for
+bootstrapped MENA marketplace apps avoiding gateway fees/complexity —
+and it is the *existing, already-designed* product, not something
+invented for this slice.
+
+**A real, serious anti-pattern found in the existing mock code, which
+this slice's own instructions explicitly warn against:** `useAppStore.ts`'s
+`topUp(amount)` and `paypending.tsx`'s "تم الدفع، تحقق الآن" ("I paid,
+verify now") button credited the wallet **the instant the user tapped
+the button — zero verification of anything, ever.** This is a textbook
+"fake payment succeeded state," and it is exactly what this slice
+replaces. The old flow's own on-screen copy ("بانتظار تأكيد الدفع" /
+"awaiting payment confirmation") was already promising something the
+code never actually did.
+
+**Ad promotion (`app/promote/[id].tsx`) is deliberately NOT wired to
+real spending.** No real "featured listing" capability exists in the
+Listings backend at all yet — Phase 2B Slice 2's own report: `"featured"
+stays honestly empty array (no promotion system)`. There is nothing real
+for a promotion payment to actually purchase yet. Documented as a
+dependency on that feature landing first (a separate, real product
+feature to build, not a payments gap), not silently skipped — `promote/[id].tsx`
+and its mock spend (`spendOnPromote`/`promoBalance`) are untouched.
+
+## 2. Backend DocTypes
+
+| DocType | Autoname | Shape | Permissions |
+|---|---|---|---|
+| `Souq Masr Payment Number` | `hash` | method/label/holder_name/number/active | Admin full; `All`+`Guest`: read=1 — public, admin-managed via Frappe's own desk UI (no admin-dashboard screen built for this, matching every prior phase's "admin dashboard out of scope" instruction) |
+| `Souq Masr Wallet` | `hash` | balance (Int), `track_changes=1` for a free automatic audit trail | Admin full; `All`+if_owner: **read=1 only, never write** — the entire "no client-controlled amount" guarantee lives in this one permission row: there is no path, ever, for a client request to change a balance directly |
+| `Souq Masr Payment Request` | `format:PAY-{#####}`, `track_changes=1` | amount (claimed)/method/payment_number/reference_note/status(Pending/Approved/Rejected)/admin_note/processed_at | Admin full; `All`: create=1; `All`+if_owner: **read=1 only, no write** — once submitted, a user cannot edit or cancel their own claim, preserving the admin's review integrity |
+
+One wallet per owner (find-or-create, same idempotent pattern used
+throughout this app). A `Souq Masr Payment Request` row is the
+transaction ledger/audit trail for every top-up claim — nothing is ever
+deleted, `Approved`/`Rejected` rows persist permanently alongside
+`processed_at` and (for rejections) the admin's own note.
+
+## 3. API endpoints
+
+`souq_masr/api/v1/payments.py`:
+- `get_active_payment_numbers()` — the real numbers to show on
+  `app/pay.tsx` (replacing the previously-always-empty mock list).
+- `get_my_wallet()` — real current balance (auto-creates a zero-balance
+  wallet on first access, never fabricates a starting balance).
+- `create_topup_request(amount, method, payment_number, reference_note)`
+  — **creates a `Pending` claim only. The wallet balance does not change
+  here at all** — this is the one function that most directly replaces
+  the old fake-success `topUp()`, and it deliberately does the opposite
+  of what that function did.
+- `get_my_payment_requests(page, limit)` — a user's own claims + status,
+  strictly scoped to the caller.
+- `transfer_balance(to_phone, amount)` — **real-time**, not
+  pending-approval, because no external money enters the system: an
+  atomic server-side debit-then-credit, with the recipient resolved from
+  a real phone number to a real `User`, and the sender's balance
+  re-checked against the real stored value at execution time (never
+  trusting a client-supplied "I have enough" claim).
+- **Admin-only** (no mobile UI calls these; a real admin uses Frappe's
+  own desk/API, same precedent as every other "verification pending"
+  admin action in this codebase): `approve_payment_request(request_id)`
+  (idempotent — approving an already-approved request is a safe no-op,
+  verified live in §5) and `reject_payment_request(request_id, admin_note)`,
+  gated by an explicit `"Souq Masr Admin" in frappe.get_roles(...)`
+  check, plus `get_pending_payment_requests` for an admin to see the
+  review queue.
+
+`_credit`/`_debit` are the only two functions in this entire app that
+ever mutate a wallet's balance — both always `ignore_permissions=True`
+server-side writes, never reachable from a client-supplied balance
+value.
+
+## 4. Security design — why this is safe
+
+- **No client-controlled final amount for top-ups:** the `amount` field
+  on a `Souq Masr Payment Request` is explicitly documented (in the
+  DocType itself) as a *claim*, never trusted as fact — the wallet is
+  only ever credited by `approve_payment_request`, which is
+  Admin-role-gated and runs entirely server-side; a malicious client
+  changing the claimed amount changes nothing except what an admin sees
+  when reviewing (and rejecting) the claim.
+- **No client-controlled amount for transfers either:** `transfer_balance`
+  re-derives the sender's real balance from the database at execution
+  time and rejects if insufficient — a stale or fabricated client-side
+  balance figure has no effect on the actual transaction.
+- **No fake success state anywhere:** creating a top-up request always
+  returns `status: "Pending"`; the mobile UI's copy was updated to match
+  reality ("بانتظار مراجعة الدفع" — awaiting review — instead of
+  implying the old instant-confirm mock behavior).
+- **Idempotency:** re-approving an already-processed request is a safe
+  no-op (verified live, §5) — no double-crediting is possible even under
+  a retried/duplicated admin action.
+- **Reconciliation-safe:** every claim carries which payment number the
+  user claims to have paid, an optional reference note, and (via
+  `track_changes=1` on both `Wallet` and `Payment Request`) a full,
+  automatic version history of every state change — an admin has
+  everything needed to manually reconcile against their own real bank/
+  wallet statements, which is the entire point of this product's chosen
+  manual-transfer model.
+
+## 5. Live HTTP test results (`test_payments.py`, 15 groups)
+
+Two payers, a stranger, and a real test admin (role granted via bench
+console for this test, revoked immediately after), all passed:
+
+```
+1. Guest cannot see wallet / create requests -> 403
+2. Fresh wallet auto-creates at balance=0
+3. Creating a topup request -> Pending, balance UNCHANGED (the core no-fake-success test)
+4. Neither the requester themselves NOR a stranger can approve a request -> 403 both
+5. A real admin sees the pending request in the review queue
+   -> approves it -> status=Approved, new_balance correct
+6. Balance NOW reflects the approved amount
+7. Re-approving the same request is idempotent — balance does NOT double-credit
+8. A second request, REJECTED by admin -> balance unaffected
+9. Real-time wallet-to-wallet transfer -> sender debited, recipient credited, both exact
+10. Transferring more than the real available balance is rejected server-side (not client-trusted)
+11. Transferring to a non-existent phone number -> clean 404
+12. Transferring to yourself -> rejected
+13. A user sees only their OWN payment requests (2), a stranger sees 0
+14. Invalid payment request id -> clean 404, no traceback/filesystem-path leakage
+15. Active payment numbers endpoint returns [] by default (no fake numbers)
+
+PAYMENTS TESTS PASSED
+```
+
+## 6. Security/ownership test results
+
+Guest rejected on every read/mutation (§5.1); self-approval and a real
+third-party stranger both rejected from the admin-only endpoints,
+verified against real non-admin accounts, not just reasoned about
+(§5.4); a real admin role (granted via bench console specifically for
+this test, then revoked) was required for approve/reject to succeed at
+all (§5.5); a real transfer-amount-exceeds-balance case rejected
+server-side (§5.10); a fabricated/nonexistent recipient rejected (§5.11);
+self-transfer blocked (§5.12); per-user data scoping on payment-request
+listing verified against a real second user (§5.13); malformed/invalid
+input produces a clean error, never a traceback (§5.14).
+
+## 7. Mobile changes
+
+- `services/paymentService.ts` (new) — same adapter/`ApiResult` pattern
+  as every prior slice.
+- `app/pay.tsx` — now fetches real active payment numbers instead of the
+  permanently-empty mock list.
+- `app/transfer.tsx` — now fetches and displays the real wallet balance
+  for both display and the send-button's validation.
+- `app/paypending.tsx` — its `confirm` action now calls the real backend
+  for `topup` (`create_topup_request`, correctly ends in a genuinely
+  pending state, copy updated to say so honestly) and `transfer`
+  (`transfer_balance`, real and immediate); `promote` is untouched,
+  still fully mock, per §1's documented dependency.
+- `app/(tabs)/profile.tsx`'s wallet card now shows the real balance
+  (`promoBalance` stays mock, since ad promotion itself isn't real yet).
+
+**A deliberate architectural difference from every prior slice's
+real/mock split:** top-up and transfer now **always** use the real
+backend — there is no "keep using the old mock behavior if it already
+existed" branch here, unlike Company/Job/Service/Career-Profile's
+upsert-preference pattern. Those patterns preserved *real user content*
+someone had already created; `adsBalance`'s old mock behavior was itself
+the exact anti-pattern this slice exists to fix (instant fake credit,
+zero verification) — preserving it would mean preserving a bug, not
+preserving legitimate data.
+
+**Verification:** `tsc --noEmit` clean, `expo export --platform ios`
+clean.
+
+## 8. What's still mock / explicitly out of scope this slice
+
+- Ad promotion spending (`app/promote/[id].tsx`, `promoBalance`,
+  `spendOnPromote`) — untouched, depends on a real "featured listing"
+  capability that doesn't exist in Listings yet (§1).
+- No admin-dashboard UI for managing payment numbers or reviewing/
+  approving payment requests — an admin uses Frappe's own desk UI
+  (`/app/souq-masr-payment-number`, `/app/souq-masr-payment-request`) or
+  calls the whitelisted API directly, matching this project's
+  consistent "admin dashboard is out of scope" precedent from every
+  prior phase.
+- No payment gateway of any kind — not a gap, a correct match to this
+  product's actual (non-gateway) design, per §1.
+
+## 9. Blockers
+
+None for the scope actually claimed. If a future phase decides this
+product *should* add an automated gateway (card payments, instant
+mobile-wallet API confirmation, etc.), that is a new, distinct product
+decision requiring the requester's own provider choice and credentials
+— not something to be silently added later without that decision being
+made explicitly, per this slice's own instruction not to invent one.
+
+## 10. Decision
+
+# ✅ GO — for the real manual-transfer payment backend (top-up claims + admin review + real-time transfer), fully live-tested including cross-user and non-admin rejection and a genuine idempotency check
+
+No payment gateway was integrated because none exists in this product's
+actual design and none was invented, per instruction. Ad promotion
+spending remains out of scope pending a real promotion feature. No
+regression to any prior GO slice.

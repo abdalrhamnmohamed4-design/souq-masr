@@ -1,13 +1,21 @@
 /**
  * app/pay.tsx — يقابل .payline/.plan + .field من نمط #promote — شحن
  * رصيد إعلانات للمحفظة. بعد اختيار المبلغ، بتظهر أرقام الدفع الحقيقية
- * اللي الأدمن ضايفها من لوحة التحكم (mock/paymentNumbers.ts) عشان
- * العميل يعرف يحوّل فين قبل ما يأكد إنه دفع — قبل كده الشاشة كانت بتقفز
- * على طول لـ"تأكيد الدفع" من غير ما تقول للعميل يبعت لمين.
+ * اللي الأدمن ضايفها من لوحة التحكم عشان العميل يعرف يحوّل فين قبل ما
+ * يأكد إنه دفع.
+ *
+ * Payments vertical (Phase 2B): الأرقام دلوقتي بتيجي من الباك إند
+ * الحقيقي (souq_masr.api.v1.payments.get_active_payment_numbers) —
+ * الأدمن بيضيفها عن طريق Frappe's desk UI مباشرة (بديل صفحة أدمن موبايل،
+ * برّه نطاق أي slice لحد دلوقتي). شحن الرصيد نفسه (مش الأرقام) بقى دايمًا
+ * حقيقي — مفيش fallback محلي هنا عمدًا، لأن السلوك المحلي القديم
+ * (topUp() بيزوّد الرصيد فورًا من غير أي تحقق) كان بالظبط النمط الخاطئ
+ * اللي الـslice دي جايه تصلحه، مش بيانات مستخدم حقيقية يستاهل نحافظ
+ * عليها زي شركة/وظيفة/خدمة اتعملت فعلًا.
  */
 import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/Icon';
@@ -15,7 +23,8 @@ import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAuthGuard } from '@/components/AuthGuard';
 import { Button } from '@/components/primitives/Button';
 import { FormField } from '@/components/primitives/FormField';
-import { getActivePaymentNumbers, METHOD_LABEL } from '@/mock/paymentNumbers';
+import { METHOD_LABEL as MOCK_METHOD_LABEL } from '@/mock/paymentNumbers';
+import { getActivePaymentNumbers, type RealPaymentNumber } from '@/services/paymentService';
 import { useTheme } from '@/theme/ThemeProvider';
 
 const AMOUNTS = [50, 100, 250, 500];
@@ -27,11 +36,19 @@ export default function Pay() {
   const [amount, setAmount] = useState(100);
   const [custom, setCustom] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [activeNumbers, setActiveNumbers] = useState<RealPaymentNumber[]>([]);
+  const [loading, setLoading] = useState(true);
   const authBlock = useAuthGuard({ title: 'سجّل دخولك عشان تشحن رصيدك', description: 'شحن المحفظة عملية مالية — لازم تكون مسجّل دخولك الأول.' });
   if (authBlock) return authBlock;
 
+  useEffect(() => {
+    getActivePaymentNumbers().then((r) => {
+      if (r.status === 'success') setActiveNumbers(r.data.items);
+      setLoading(false);
+    });
+  }, []);
+
   const finalAmount = custom ? Number(custom.replace(/[^0-9]/g, '')) || 0 : amount;
-  const activeNumbers = getActivePaymentNumbers();
 
   const copyNumber = async (id: string, number: string) => {
     await Clipboard.setStringAsync(number);
@@ -79,7 +96,7 @@ export default function Pay() {
           حوّل {finalAmount > 0 ? `${finalAmount.toLocaleString('en-US')} ج.م` : 'المبلغ'} على واحد من الأرقام دي
         </Text>
 
-        {activeNumbers.length === 0 ? (
+        {!loading && activeNumbers.length === 0 ? (
           <View style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderStyle: 'dashed', borderRadius: radius.r3, padding: spacing.s4, alignItems: 'center', gap: spacing.s2 }}>
             <Icon name="info" color={colors.ink3} size={20} />
             <Text style={{ fontSize: 11.5, color: colors.ink3, textAlign: 'center', lineHeight: 18 }}>
@@ -94,7 +111,7 @@ export default function Pay() {
             {activeNumbers.map((p) => (
               <View key={p.id} style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.s3, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s3 }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 11, color: colors.ink3 }}>{METHOD_LABEL[p.method]} · {p.holderName}</Text>
+                  <Text style={{ fontSize: 11, color: colors.ink3 }}>{MOCK_METHOD_LABEL[p.method]} · {p.holderName}</Text>
                   <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 15, color: colors.ink, fontVariant: ['tabular-nums'], marginTop: 2 }}>{p.number}</Text>
                 </View>
                 <Pressable
