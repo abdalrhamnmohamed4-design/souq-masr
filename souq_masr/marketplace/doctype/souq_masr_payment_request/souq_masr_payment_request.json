@@ -1,0 +1,38 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Payment Request",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "format:PAY-{#####}",
+  "naming_rule": "Expression",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["amount", "method", "payment_number", "reference_note", "status", "admin_note", "processed_at"],
+  "fields": [
+    { "fieldname": "amount", "label": "Claimed Amount", "fieldtype": "Int", "reqd": 1, "in_list_view": 1, "description": "The amount the user CLAIMS to have transferred externally. This is never auto-credited to their wallet — see status. Only what the admin actually approves is what gets credited, via _credit() at approval time, not this field being trusted directly." },
+    { "fieldname": "method", "label": "Method", "fieldtype": "Select", "options": "vodafone_cash\norange_cash\netisalat_cash\ninstapay\nbank_transfer" },
+    { "fieldname": "payment_number", "label": "Payment Number", "fieldtype": "Link", "options": "Souq Masr Payment Number", "description": "Which of the admin's real receiving numbers the user claims to have sent to — for the admin's own manual reconciliation against their actual bank/wallet statements." },
+    { "fieldname": "reference_note", "label": "Reference Note", "fieldtype": "Data", "description": "Optional free-text the user can supply (e.g. a transaction reference id from their banking app) to help the admin reconcile." },
+    { "fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Pending\nApproved\nRejected", "default": "Pending", "in_list_view": 1, "in_standard_filter": 1 },
+    { "fieldname": "admin_note", "label": "Admin Note", "fieldtype": "Small Text", "description": "Set by the admin on rejection (or approval) — e.g. why a claimed transfer couldn't be matched." },
+    { "fieldname": "processed_at", "label": "Processed At", "fieldtype": "Datetime" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1 }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}

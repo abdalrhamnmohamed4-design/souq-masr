@@ -1,0 +1,31 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Wallet",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["balance"],
+  "fields": [
+    { "fieldname": "balance", "label": "Balance", "fieldtype": "Int", "default": "0", "description": "EGP, whole units (matches this app's existing convention of not tracking piasters anywhere). Mutated ONLY server-side by souq_masr.api.v1.payments' internal _credit/_debit helpers, using ignore_permissions writes — see the DocType permissions: owner gets read=1 only, never write, so there is no client-reachable path to change a balance directly, ever." }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "if_owner": 1, "read": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

@@ -1,0 +1,36 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Payment Number",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["method", "label", "holder_name", "number", "active"],
+  "fields": [
+    { "fieldname": "method", "label": "Method", "fieldtype": "Select", "options": "vodafone_cash\norange_cash\netisalat_cash\ninstapay\nbank_transfer", "reqd": 1 },
+    { "fieldname": "label", "label": "Label", "fieldtype": "Data" },
+    { "fieldname": "holder_name", "label": "Holder Name", "fieldtype": "Data", "reqd": 1 },
+    { "fieldname": "number", "label": "Number", "fieldtype": "Data", "reqd": 1 },
+    { "fieldname": "active", "label": "Active", "fieldtype": "Check", "default": "1" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "read": 1 },
+    { "role": "Guest", "read": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
