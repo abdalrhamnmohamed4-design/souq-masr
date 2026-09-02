@@ -1,0 +1,49 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Service",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "format:SRV-{#####}",
+  "naming_rule": "Expression",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "category_key", "trade_key", "title", "description", "price", "price_type",
+    "service_areas_json", "duration", "image_urls_json", "availability",
+    "status", "offer_price", "offer_ends_at"
+  ],
+  "fields": [
+    { "fieldname": "category_key", "label": "Category Key", "fieldtype": "Data", "reqd": 1, "in_standard_filter": 1 },
+    { "fieldname": "trade_key", "label": "Trade Key", "fieldtype": "Data" },
+    { "fieldname": "title", "label": "Title", "fieldtype": "Data", "reqd": 1, "in_list_view": 1 },
+    { "fieldname": "description", "label": "Description", "fieldtype": "Text" },
+    { "fieldname": "price", "label": "Price", "fieldtype": "Int" },
+    { "fieldname": "price_type", "label": "Price Type", "fieldtype": "Select", "options": "fixed\nstarting_from\nhourly\nnegotiable", "default": "starting_from" },
+    { "fieldname": "service_areas_json", "label": "Service Areas (JSON)", "fieldtype": "Long Text" },
+    { "fieldname": "duration", "label": "Duration", "fieldtype": "Data" },
+    { "fieldname": "image_urls_json", "label": "Image URLs (JSON)", "fieldtype": "Long Text", "description": "JSON array of public image URLs (is_private=0, same as listing images) — array order is display order, no separate child DocType needed for a flat ordered list of URLs." },
+    { "fieldname": "availability", "label": "Availability", "fieldtype": "Data" },
+    { "fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "active\npaused\ndeleted", "default": "active", "in_standard_filter": 1 },
+    { "fieldname": "offer_price", "label": "Offer Price", "fieldtype": "Int" },
+    { "fieldname": "offer_ends_at", "label": "Offer Ends At", "fieldtype": "Date" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "write": 1, "delete": 1 },
+    { "role": "Guest", "read": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

@@ -1,0 +1,48 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Professional Profile",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "name1", "trade_key", "photo", "description", "years_experience", "skills_json",
+    "service_areas_json", "price_starting_from", "availability", "working_hours",
+    "phone", "whatsapp", "verification"
+  ],
+  "fields": [
+    { "fieldname": "name1", "label": "Name", "fieldtype": "Data", "reqd": 1 },
+    { "fieldname": "trade_key", "label": "Trade Key", "fieldtype": "Data", "description": "Client-side constant from mock/jobs/trades.ts — same 'flat, not a server taxonomy' decision as Jobs' category_key/profession_key." },
+    { "fieldname": "photo", "label": "Photo", "fieldtype": "Attach Image" },
+    { "fieldname": "description", "label": "Description", "fieldtype": "Text" },
+    { "fieldname": "years_experience", "label": "Years Experience", "fieldtype": "Int" },
+    { "fieldname": "skills_json", "label": "Skills (JSON)", "fieldtype": "Long Text" },
+    { "fieldname": "service_areas_json", "label": "Service Areas (JSON)", "fieldtype": "Long Text", "description": "JSON array of governorate/area DISPLAY NAMES (not location keys) — matches the mobile UI's own model (app/services/profile.tsx derives these from locationPathLabel, not a stored location_key)." },
+    { "fieldname": "price_starting_from", "label": "Price Starting From", "fieldtype": "Int" },
+    { "fieldname": "availability", "label": "Availability", "fieldtype": "Data" },
+    { "fieldname": "working_hours", "label": "Working Hours", "fieldtype": "Data" },
+    { "fieldname": "phone", "label": "Phone", "fieldtype": "Data" },
+    { "fieldname": "whatsapp", "label": "WhatsApp", "fieldtype": "Data" },
+    { "fieldname": "verification", "label": "Verification", "fieldtype": "Select", "options": "unverified\npending\nverified\nrejected", "default": "pending" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "write": 1, "delete": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
