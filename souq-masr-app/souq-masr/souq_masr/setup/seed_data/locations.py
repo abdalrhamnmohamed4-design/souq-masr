@@ -22,8 +22,13 @@ def build_locations() -> list[dict]:
 	for name in GOVERNORATE_NAMES:
 		locations.append({"id": f"gov-{_slug(name)}", "name": name, "type": "governorate", "parent_id": None})
 
-	def add_city(gov_id: str, city_name: str, areas: list[str] | None = None):
-		city_id = f"city-{_slug(city_name)}"
+	# id بيتحسب من _slug(city_name) بس — لو فيه مدينتين حقيقيتين في محافظتين
+	# مختلفتين بنفس الاسم بالظبط (زي "فيصل" في الجيزة والسويس)، بيتصادموا
+	# على نفس الـid، وthe idempotent frappe.db.exists() check في
+	# _seed_locations() بيتجاهل التاني صامت. key اختياري بيحل التصادم ده
+	# لمدينة بعينها من غير ما يغيّر id أي مدينة تانية.
+	def add_city(gov_id: str, city_name: str, areas: list[str] | None = None, key: str | None = None):
+		city_id = key or f"city-{_slug(city_name)}"
 		locations.append({"id": city_id, "name": city_name, "type": "city", "parent_id": gov_id})
 		for a in areas or []:
 			locations.append({"id": f"area-{_slug(city_name)}-{_slug(a)}", "name": a, "type": "area", "parent_id": city_id})
@@ -52,7 +57,7 @@ def build_locations() -> list[dict]:
 
 	add_city("gov-السويس", "الأربعين")
 	add_city("gov-السويس", "الجناين")
-	add_city("gov-السويس", "فيصل")
+	add_city("gov-السويس", "فيصل", key="city-فيصل-السويس")  # تصادم id مع فيصل الجيزة — شوف كومنت add_city
 	add_city("gov-السويس", "السويس البلد")
 	add_city("gov-السويس", "العين السخنة", ["بورتو السخنة", "كيلو 43", "كيلو 63"])
 

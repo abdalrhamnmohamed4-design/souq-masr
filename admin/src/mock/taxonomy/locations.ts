@@ -24,8 +24,12 @@ export const locations: LocationNode[] = governorateNames.map((name) => ({
   parentId: null,
 }));
 
-function addCity(govId: string, cityName: string, areas: string[] = []) {
-  const cityId = `city-${slug(cityName)}`;
+// id بيتحسب من slug(cityName) بس — لو فيه مدينتين حقيقيتين في محافظتين
+// مختلفتين بنفس الاسم بالظبط (زي "فيصل" في الجيزة والسويس)، بيتصادموا
+// على نفس الـid ويضيع واحد منهم صامت. key اختياري بيحل التصادم ده لمدينة
+// بعينها من غير ما يغيّر id أي مدينة تانية.
+function addCity(govId: string, cityName: string, areas: string[] = [], key?: string) {
+  const cityId = key ?? `city-${slug(cityName)}`;
   locations.push({ id: cityId, name: cityName, type: 'city', parentId: govId });
   areas.forEach((a) => locations.push({ id: `area-${slug(cityName)}-${slug(a)}`, name: a, type: 'area', parentId: cityId }));
 }
@@ -54,7 +58,7 @@ addCity('gov-الإسكندرية', 'العجمي');
 
 addCity('gov-السويس', 'الأربعين');
 addCity('gov-السويس', 'الجناين');
-addCity('gov-السويس', 'فيصل');
+addCity('gov-السويس', 'فيصل', [], 'city-فيصل-السويس'); // تصادم id مع فيصل الجيزة — شوف كومنت addCity
 addCity('gov-السويس', 'السويس البلد');
 
 addCity('gov-القليوبية', 'بنها');
