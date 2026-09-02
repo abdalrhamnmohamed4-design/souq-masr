@@ -5,8 +5,8 @@
  */
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/Icon';
 import { useAuthGuard } from '@/components/AuthGuard';
@@ -19,6 +19,8 @@ import { getJobCategories, getProfessionsForCategory } from '@/mock/jobs/categor
 import { toPositiveInt } from '@/lib/validation';
 import { locationPathLabel } from '@/mock/taxonomy/locations';
 import { CAREER_LEVEL_LABELS, WORK_TYPE_LABELS, type CareerLevel, type Job, type WorkType } from '@/mock/jobs/types';
+import { useMyCompany } from '@/hooks/useMyCompany';
+import { createJob, getJob, isRealJobId, updateJob, type RealJob } from '@/services/jobService';
 import { useJobsStore } from '@/store/useJobsStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -31,12 +33,29 @@ export default function PostJob() {
   const { editId } = useLocalSearchParams<{ editId?: string }>();
   const { colors, spacing, radius, brandDark } = useTheme();
   const insets = useSafeAreaInsets();
-  const userCompanies = useJobsStore((s) => s.userCompanies);
   const userJobs = useJobsStore((s) => s.userJobs);
   const addJob = useJobsStore((s) => s.addJob);
-  const updateJob = useJobsStore((s) => s.updateJob);
-  const myCompany = userCompanies.find((c) => c.ownerSellerId === 'me');
-  const editingJob = editId ? userJobs.find((j) => j.id === editId) : undefined;
+  const updateJobMock = useJobsStore((s) => s.updateJob);
+  const company = useMyCompany();
+  const myCompany = company.any;
+
+  // Jobs vertical (Phase 2B): editId بتاع JOB-##### معناه وظيفة حقيقية —
+  // بديل بحث محلي في userJobs. أي id تاني (job-... القديم) لسه بيتقرا
+  // محليًا زي ما كان بالظبط.
+  const editIsReal = isRealJobId(editId);
+  const editingJobMock = editId && !editIsReal ? userJobs.find((j) => j.id === editId) : undefined;
+  const [realEditingJob, setRealEditingJob] = useState<RealJob | null>(null);
+  const [loadingRealJob, setLoadingRealJob] = useState(editIsReal);
+
+  useEffect(() => {
+    if (!editIsReal || !editId) return;
+    getJob(editId).then((r) => {
+      if (r.status === 'success') setRealEditingJob(r.data);
+      setLoadingRealJob(false);
+    });
+  }, [editIsReal, editId]);
+
+  const editingJob = editingJobMock;
 
   const [stepIndex, setStepIndex] = useState(0);
   const stepKey = STEPS[stepIndex];
@@ -61,6 +80,32 @@ export default function PostJob() {
   const [benefits, setBenefits] = useState(editingJob?.benefits.join('\n') ?? '');
   const [deadline, setDeadline] = useState<Date | undefined>(editingJob?.deadline ? new Date(editingJob.deadline) : undefined);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
+  // لما بيانات وظيفة حقيقية بتتعدّل توصل، اعمّر كل حقول النموذج منها —
+  // نفس نمط app/jobs/my-company.tsx's hydration بالظبط.
+  useEffect(() => {
+    if (!realEditingJob) return;
+    setCategoryId(realEditingJob.categoryKey);
+    setProfessionId(realEditingJob.professionKey);
+    setTitle(realEditingJob.title);
+    setWorkType(realEditingJob.workType);
+    setCareerLevel(realEditingJob.careerLevel);
+    setRemote(realEditingJob.remote);
+    setLocationId(realEditingJob.locationKey);
+    setExpMin(realEditingJob.experienceYearsMin != null ? String(realEditingJob.experienceYearsMin) : '');
+    setExpMax(realEditingJob.experienceYearsMax != null ? String(realEditingJob.experienceYearsMax) : '');
+    setSalaryMin(realEditingJob.salaryMin != null ? String(realEditingJob.salaryMin) : '');
+    setSalaryMax(realEditingJob.salaryMax != null ? String(realEditingJob.salaryMax) : '');
+    setSalaryHidden(realEditingJob.salaryHidden);
+    setDescription(realEditingJob.description);
+    setResponsibilities(realEditingJob.responsibilities.join('\n'));
+    setRequirements(realEditingJob.requirements.join('\n'));
+    setSkills(realEditingJob.skills.join(', '));
+    setBenefits(realEditingJob.benefits.join('\n'));
+    setDeadline(realEditingJob.deadline ? new Date(realEditingJob.deadline) : undefined);
+  }, [realEditingJob]);
+
   const authBlock = useAuthGuard({ title: 'سجّل دخولك عشان تنشر وظيفة', description: 'نشر وظيفة مرتبط بحسابك وشركتك — سجّل دخولك الأول.' });
   if (authBlock) return authBlock;
 
@@ -73,9 +118,49 @@ export default function PostJob() {
     return true;
   })();
 
-  const publish = () => {
+  const publish = async () => {
     if (!myCompany || !categoryId || !locationId) return;
     const cityName = locationPathLabel(locationId).split('، ')[0];
+
+    // إعلان/تعديل حقيقي — مفيش شركة محلية قديمة (يبقى إما شركة حقيقية،
+    // أو محتاجين ننشئ واحدة أصلًا)، أو بنعدّل وظيفة حقيقية بالفعل.
+    if ((!company.mock && company.real) || editIsReal) {
+      const realCompanyId = editIsReal && realEditingJob ? realEditingJob.company : company.real!.id;
+      setPublishing(true);
+      const payload = {
+        company: realCompanyId,
+        title: title.trim(),
+        categoryKey: categoryId,
+        professionKey: professionId ?? undefined,
+        workType,
+        careerLevel: careerLevel ?? undefined,
+        city: cityName,
+        locationKey: locationId,
+        remote,
+        salaryMin: toPositiveInt(salaryMin),
+        salaryMax: toPositiveInt(salaryMax),
+        salaryHidden,
+        experienceYearsMin: toPositiveInt(expMin),
+        experienceYearsMax: toPositiveInt(expMax),
+        description: description.trim(),
+        responsibilities: responsibilities.split('\n').map((s) => s.trim()).filter(Boolean),
+        requirements: requirements.split('\n').map((s) => s.trim()).filter(Boolean),
+        skills: skills.split(',').map((s) => s.trim()).filter(Boolean),
+        benefits: benefits.split('\n').map((s) => s.trim()).filter(Boolean),
+        applicationMethod: 'in_app' as const,
+        deadline: deadline?.toISOString().slice(0, 10),
+        isUrgent: realEditingJob?.isUrgent ?? false,
+      };
+      const r = editIsReal && editId ? await updateJob(editId, payload) : await createJob(payload);
+      setPublishing(false);
+      if (r.status !== 'success') {
+        Alert.alert('تعذّر النشر', 'حصلت مشكلة، جرّب تاني.');
+        return;
+      }
+      router.replace(`/jobs/${r.data.id}`);
+      return;
+    }
+
     const job: Omit<Job, 'id' | 'postedAt' | 'status' | 'views' | 'applicationsCount' | 'isFeatured'> = {
       title: title.trim(),
       companyId: myCompany.id,
@@ -101,14 +186,18 @@ export default function PostJob() {
       isUrgent: editingJob?.isUrgent ?? false,
     };
     if (editingJob) {
-      // تعديل حقيقي على نفس الـid — مش وظيفة مكررة جديدة.
-      updateJob(editingJob.id, job);
+      // تعديل محلي على نفس الـid — مش وظيفة مكررة جديدة.
+      updateJobMock(editingJob.id, job);
       router.replace(`/jobs/${editingJob.id}`);
       return;
     }
     const id = addJob(job);
     router.replace(`/jobs/${id}`);
   };
+
+  if (company.loading || loadingRealJob) {
+    return <View style={{ flex: 1, backgroundColor: colors.paper }} />;
+  }
 
   if (!myCompany) {
     return (
@@ -135,7 +224,7 @@ export default function PostJob() {
         <Pressable onPress={() => (stepIndex === 0 ? router.back() : setStepIndex((i) => i - 1))} style={{ width: 40, height: 40, borderRadius: radius.r2, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }}>
           <Icon name="x" color={colors.ink} />
         </Pressable>
-        <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 17, color: colors.ink }}>{editingJob ? 'تعديل الوظيفة' : 'نشر وظيفة'}</Text>
+        <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 17, color: colors.ink }}>{editingJob || realEditingJob ? 'تعديل الوظيفة' : 'نشر وظيفة'}</Text>
       </View>
       <View style={{ flexDirection: 'row', gap: 6, paddingHorizontal: spacing.s5, paddingBottom: spacing.s4 }}>
         {STEPS.map((s, i) => (
@@ -255,7 +344,7 @@ export default function PostJob() {
         ) : null}
         <View style={{ flex: 1 }}>
           {stepKey === 'review' ? (
-            <Button onPress={publish}>{editingJob ? 'احفظ التعديلات' : 'نشر الوظيفة'}</Button>
+            <Button disabled={publishing} onPress={publish}>{editingJob || realEditingJob ? 'احفظ التعديلات' : 'نشر الوظيفة'}</Button>
           ) : (
             <Button disabled={!canNext} onPress={() => setStepIndex((i) => Math.min(STEPS.length - 1, i + 1))}>التالي</Button>
           )}

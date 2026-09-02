@@ -1,0 +1,32 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Saved Job",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["job"],
+  "fields": [
+    { "fieldname": "job", "label": "Job", "fieldtype": "Link", "options": "Souq Masr Job", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "description": "One row per (owner, job) pair — same idempotent-create pattern as Souq Masr Listing Favorite." }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "delete": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

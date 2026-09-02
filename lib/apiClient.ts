@@ -227,16 +227,24 @@ export async function frappePost<T>(
 export type LocalFileUpload = { uri: string; name: string; mimeType: string };
 
 /**
- * رفع ملف حقيقي (صورة إعلان) لـFrappe's core /api/method/upload_file —
- * مش whitelisted method خاص بينا، ده endpoint جاهز أصلًا في Frappe نفسه
- * (شوف MOBILE_BACKEND_GAPS.md's Phase 2F note القديمة). Multipart،
- * مش JSON body زي frappePost العادية، فمحتاج منطق منفصل بسيط هنا بدل ما
- * نلوي frappeRequest عشانه. `isPrivate: false` دايمًا للصور دي تحديدًا —
- * لازم تتعرض لأي Guest بيشوف إعلان عام من غير token، مش خاصة بصاحبها.
+ * رفع ملف حقيقي (صورة إعلان، أو ملف خاص زي CV) لـFrappe's core
+ * /api/method/upload_file — مش whitelisted method خاص بينا، ده endpoint
+ * جاهز أصلًا في Frappe نفسه (شوف MOBILE_BACKEND_GAPS.md's Phase 2F note
+ * القديمة). Multipart، مش JSON body زي frappePost العادية، فمحتاج منطق
+ * منفصل بسيط هنا بدل ما نلوي frappeRequest عشانه.
+ *
+ * `isPrivate` دايمًا `false` افتراضيًا (نفس السلوك القديم بالظبط لصور
+ * الإعلانات — لازم تتعرض لأي Guest بيشوف إعلان عام من غير token). Jobs
+ * vertical's CV upload هو أول مستهلك بيمرّر `isPrivate: true` صراحة —
+ * لما يبقى `true`، الـfile_url الراجع بيبقى `/private/files/...` مش
+ * قابل للوصول المباشر من غير auth، وميتخزّنش/يتعرض زي أي صورة إعلان
+ * عادية؛ الملف الخاص ده لازم يتقرا بس عن طريق endpoint مخصص بيعمل فحص
+ * صلاحية صريح (زي get_application_resume في jobs.py)، مش رابط مباشر.
  */
 export async function frappeUploadFile(
   file: LocalFileUpload,
   timeoutMs = 30000,
+  options?: { isPrivate?: boolean },
 ): Promise<ApiResult<{ fileUrl: string }>> {
   const device = await checkDeviceConnectivity();
   if (!device.isInternetReachable) return { status: 'no_internet' };
@@ -250,7 +258,7 @@ export async function frappeUploadFile(
   // React Native's fetch/FormData بتقبل شكل {uri,name,type} ده تحديدًا
   // لملف محلي حقيقي من الجهاز (مش File/Blob زي المتصفح العادي).
   form.append('file', { uri: file.uri, name: file.name, type: file.mimeType } as unknown as Blob);
-  form.append('is_private', '0');
+  form.append('is_private', options?.isPrivate ? '1' : '0');
 
   try {
     const res = await apiFetch(

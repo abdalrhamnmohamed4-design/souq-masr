@@ -1,11 +1,17 @@
 /**
  * app/jobs/my-company.tsx — إنشاء/تعديل بيانات شركتك (PART 21). لازم
  * قبل نشر أي وظيفة — مفيش وظيفة من غير شركة صاحبة ليها.
+ *
+ * Jobs vertical (Phase 2B): لو عندك شركة محلية (mock) قديمة من قبل
+ * التحديث ده، بتفضل تتعدّل محليًا زي ما هي بالظبط (مفيش هجرة قسرية).
+ * غير كده، أي شركة جديدة بتتسجّل على الباك إند الحقيقي مباشرة
+ * (souq_masr.api.v1.companies.create_or_update_my_company) — نفس مبدأ
+ * "الجديد حقيقي، القديم يفضل زي ما هو" المتّبع في كل الـslices السابقة.
  */
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
-import { Image, Pressable, ScrollView, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { Icon } from '@/components/Icon';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAuthGuard } from '@/components/AuthGuard';
@@ -13,6 +19,8 @@ import { Button } from '@/components/primitives/Button';
 import { Chip } from '@/components/primitives/Chip';
 import { FormField } from '@/components/primitives/FormField';
 import type { CompanySize } from '@/mock/jobs/types';
+import { frappeUploadFile } from '@/lib/apiClient';
+import { createOrUpdateMyCompany, getMyCompany, type RealCompany } from '@/services/companyService';
 import { useJobsStore } from '@/store/useJobsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -26,16 +34,57 @@ export default function MyCompany() {
   const addCompany = useJobsStore((s) => s.addCompany);
   const updateCompany = useJobsStore((s) => s.updateCompany);
   const onboardingCity = useAppStore((s) => s.onboarding.city);
-  const existing = userCompanies.find((c) => c.ownerSellerId === 'me');
+  const existingMock = userCompanies.find((c) => c.ownerSellerId === 'me');
 
-  const [logoUri, setLogoUri] = useState(existing?.logoUri);
-  const [name, setName] = useState(existing?.name ?? '');
-  const [description, setDescription] = useState(existing?.description ?? '');
-  const [industry, setIndustry] = useState(existing?.industry ?? '');
-  const [size, setSize] = useState<CompanySize>(existing?.size ?? '1-10');
-  const [city, setCity] = useState(existing?.city ?? onboardingCity);
-  const [website, setWebsite] = useState(existing?.website ?? '');
-  const [phone, setPhone] = useState(existing?.phone ?? '');
+  const [realCompany, setRealCompany] = useState<RealCompany | null>(null);
+  const [loadingReal, setLoadingReal] = useState(!existingMock);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (existingMock) return; // شركة محلية موجودة بالفعل — متعملش نداء حقيقي أصلًا
+    getMyCompany().then((r) => {
+      if (r.status === 'success') setRealCompany(r.data);
+      setLoadingReal(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const existing = existingMock ?? (realCompany ? { ...realCompany, ownerSellerId: 'me' as const, createdAt: '', verification: realCompany.verification } : undefined);
+
+  const [logoUri, setLogoUri] = useState<string | undefined>(undefined);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [industry, setIndustry] = useState('');
+  const [size, setSize] = useState<CompanySize>('1-10');
+  const [city, setCity] = useState(onboardingCity ?? '');
+  const [website, setWebsite] = useState('');
+  const [phone, setPhone] = useState('');
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    if (hydrated || loadingReal) return;
+    if (existingMock) {
+      setLogoUri(existingMock.logoUri);
+      setName(existingMock.name);
+      setDescription(existingMock.description);
+      setIndustry(existingMock.industry);
+      setSize(existingMock.size);
+      setCity(existingMock.city);
+      setWebsite(existingMock.website ?? '');
+      setPhone(existingMock.phone ?? '');
+    } else if (realCompany) {
+      setLogoUri(realCompany.logo ?? undefined);
+      setName(realCompany.name);
+      setDescription(realCompany.description);
+      setIndustry(realCompany.industry);
+      setSize(realCompany.size);
+      setCity(realCompany.city);
+      setWebsite(realCompany.website ?? '');
+      setPhone(realCompany.phone ?? '');
+    }
+    setHydrated(true);
+  }, [hydrated, loadingReal, existingMock, realCompany]);
+
   const authBlock = useAuthGuard({ title: 'سجّل دخولك عشان تضيف شركتك', description: 'بيانات الشركة مرتبطة بحسابك — سجّل دخولك الأول.' });
   if (authBlock) return authBlock;
 
@@ -48,12 +97,36 @@ export default function MyCompany() {
 
   const canSave = name.trim().length >= 2 && description.trim().length >= 5;
 
-  const save = () => {
-    const payload = { name: name.trim(), description: description.trim(), industry: industry.trim(), size, city: city.trim(), website: website.trim() || undefined, phone: phone.trim() || undefined, logoUri };
-    if (existing) updateCompany(existing.id, payload);
-    else addCompany(payload);
+  const save = async () => {
+    if (existingMock) {
+      const payload = { name: name.trim(), description: description.trim(), industry: industry.trim(), size, city: city.trim(), website: website.trim() || undefined, phone: phone.trim() || undefined, logoUri };
+      updateCompany(existingMock.id, payload);
+      router.back();
+      return;
+    }
+    setSaving(true);
+    let logoUrl: string | undefined;
+    if (logoUri && logoUri !== realCompany?.logo) {
+      const uploadResult = await frappeUploadFile({ uri: logoUri, name: logoUri.split('/').pop() || `logo-${Date.now()}.jpg`, mimeType: 'image/jpeg' });
+      if (uploadResult.status === 'success') logoUrl = uploadResult.data.fileUrl;
+    } else {
+      logoUrl = realCompany?.logo ?? undefined;
+    }
+    const r = await createOrUpdateMyCompany({
+      name: name.trim(), description: description.trim(), industry: industry.trim(), size, city: city.trim(),
+      website: website.trim() || undefined, phone: phone.trim() || undefined, logo: logoUrl,
+    });
+    setSaving(false);
+    if (r.status !== 'success') {
+      Alert.alert('تعذّر الحفظ', 'حصلت مشكلة، جرّب تاني.');
+      return;
+    }
     router.back();
   };
+
+  if (loadingReal) {
+    return <View style={{ flex: 1, backgroundColor: colors.paper }} />;
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.paper }}>
@@ -79,7 +152,7 @@ export default function MyCompany() {
         <FormField label="الموقع الإلكتروني (اختياري)" placeholder="www.example.com" value={website} onChangeText={setWebsite} />
         <FormField label="رقم التواصل" placeholder="01xxxxxxxxx" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
 
-        <Button disabled={!canSave} onPress={save}>{existing ? 'حفظ التعديلات' : 'إضافة الشركة'}</Button>
+        <Button disabled={!canSave || saving} onPress={save}>{existing ? 'حفظ التعديلات' : 'إضافة الشركة'}</Button>
       </ScrollView>
     </View>
   );

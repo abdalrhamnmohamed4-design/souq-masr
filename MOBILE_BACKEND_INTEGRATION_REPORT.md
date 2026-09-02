@@ -2976,3 +2976,294 @@ clean.
 
 **No Jobs/Services/Notifications/Payments code touched.** No regression
 to any prior GO slice.
+
+---
+
+# Phase 2B — Jobs
+
+**Scope, exactly:** real Companies, Job postings, Applications (with
+private CV handling), Interviews, Saved Jobs, and a deliberately-scoped
+Career Profile — backend complete and live-tested end-to-end; mobile
+migrated for the core "set up a company → post a job → discover it →
+apply → employer manages applicants/interviews" loop. **Explicitly
+deferred, disclosed, not built this slice:** the deep CV-builder
+sub-entities, Job Alerts, and Company reviews — see §1 and §9.
+
+## 1. Audit and scope decisions (read before anything else in this section)
+
+Read `mock/jobs/types.ts` (321 lines — the full Jobs+Services domain
+model), `mock/jobs/data.ts`, `store/useJobsStore.ts` (363 lines, every
+action), and all 11 `app/jobs/*` screens (~2,200 lines combined) before
+writing any backend code.
+
+**Three deliberate, documented scope reductions**, all following the
+same principle the base instructions modeled on ProductVariant/SKU
+("don't invent a second product model, document the dependency"):
+
+1. **Career Profile ships as scalar fields + one resume file, not the
+   full CV builder.** The mock `CareerProfile` type has 8 separate array
+   sub-entities (education, experience, skills, languages,
+   certifications, courses, projects, portfolio) plus a dual
+   uploaded/generated resume system. Normalizing all of that into child
+   DocTypes with full CRUD APIs is comparable in size to the entire
+   Listings domain on its own. What ships: `full_name`, `phone`,
+   `email`, `current_job_title`, `desired_job_title`, `years_experience`,
+   `career_level`, `expected_salary_min/max`, `preferred_work_types`, one
+   real uploaded resume file, and the visibility toggles. This is
+   sufficient for the actual product loop this slice targets — an
+   employer reviewing a real application — since employers never browse
+   arbitrary career profiles anyway (see §5's privacy design).
+   `app/jobs/profile.tsx` (691 lines, the CV builder UI),
+   `app/jobs/resume-builder.tsx`, and `app/jobs/resume-view/[id].tsx`
+   remain fully mock, untouched.
+2. **Job categories/professions stay client-side constants, not a
+   server taxonomy.** `mock/jobs/categories.ts`/`trades.ts` are
+   deliberately a separate, flat list from the marketplace's
+   hierarchical `Souq Masr Category` tree (the mock file's own comment:
+   "قسمين منفصلين تمامًا... مش نفس التصنيفات"). `category_key`/
+   `profession_key` are validated for presence only, matching how the
+   mobile UI already treats them (a fixed local picker, not a
+   server-driven tree). **Locations DO reuse the real marketplace
+   taxonomy** (`Souq Masr Location`) — that part of the domain genuinely
+   is shared.
+3. **Job Alerts and Company/Professional reviews deferred.** Job Alerts
+   (`app/jobs/alerts.tsx`) is a saved-search variant specific to Jobs,
+   separable follow-up work. Company reviews were originally slated as
+   part of this slice per the Reviews section's own note, but given the
+   realistic scope of everything else in this slice, they're deferred
+   alongside Professional/Service reviews to when Services is built —
+   `souq_masr.api.v1.content_reports`' shared report DocType already has
+   `Souq Masr Professional Profile`/`Souq Masr Service` in its target
+   enum ready for that follow-up, so this isn't a surprise addition
+   later.
+
+## 2. Backend DocTypes
+
+| DocType | Autoname | Shape | Permissions |
+|---|---|---|---|
+| `Souq Masr Company` | `format:COMP-{#####}` | name/description/industry/size/city/website/phone/email/working_hours/logo/cover/verification | Admin full; `All`: create=1; `All`+if_owner: read/write/delete=1 — **no blanket read**, public reads go through `get_company` only |
+| `Souq Masr Job` | `format:JOB-{#####}` | company (Link) + full posting fields, `*_json` Long Text for responsibilities/requirements/skills/benefits | Admin full; `All`: create=1; `All`+if_owner: read/write/delete=1; **`Guest`: read=1** (same public-marketplace shape as `Souq Masr Listing`) |
+| `Souq Masr Job Application` | `format:APP-{#####}` | job (Link) + full_name/phone/email/resume_file (private)/cover_letter/status | Admin full; `All`: create=1 **only** — two-participant (candidate+employer), same pattern as Chat/Calls |
+| `Souq Masr Job Interview` | `hash` | application/job (Links) + date/time/location/mode/notes/status | Admin full; `All`: create=1 only — same two-participant pattern |
+| `Souq Masr Saved Job` | `hash` | job (Link) | Admin full; `All`: create=1; `All`+if_owner: read/delete=1 — exact `Souq Masr Listing Favorite` shape |
+| `Souq Masr Career Profile` | `hash` | scalar fields (§1) + resume_file (private) | Admin full; `All`: create=1; `All`+if_owner: read/write/delete=1 — **no read for anyone but the owner, not even employers** (see §5) |
+| `Souq Masr Content Report` | `hash` | target_doctype (Select) + target_name (Dynamic Link) + reason/description/status | Admin full; `All`: create=1 only — same shape as `Souq Masr Listing Report`, shared across Job/Company now and Service/Professional Profile later instead of 4 near-duplicate DocTypes |
+
+`Souq Masr Company`/`Souq Masr Career Profile` both enforce **one row
+per owner** via upsert (find-existing-and-update instead of insert) in
+their API layer, with a `validate()` safety check as the second line of
+defense — same pattern as `Souq Masr Review`.
+
+## 3. API endpoints
+
+7 new files under `souq_masr/api/v1/`:
+
+- **`companies.py`** — `create_or_update_my_company` (upsert),
+  `get_my_company`, `get_company` (public).
+- **`jobs.py`** — `create_job`, `update_job`, `pause_job`/`activate_job`/
+  `close_job` (status-transition-gated, mirrors `listings.py`'s
+  `_transition_status`), `delete_job` (force=1, same link-integrity fix
+  as Slice 3's `delete_listing`, applied proactively here since Saved
+  Job/Application/Interview rows will reference a job), `get_job`
+  (`PUBLIC_STATUSES` gating, owner exempted), `get_my_jobs`,
+  `search_jobs` (q/category/work_type/career_level/city/remote/
+  salary_min), `get_jobs_by_company`, `increment_job_views`.
+- **`job_applications.py`** — `apply_to_job` (idempotent — reapplying
+  returns the same application, not a duplicate), `has_applied`,
+  `get_my_applications`, `withdraw_application` (candidate-only),
+  `get_applications_for_job` (employer-only), `set_application_status`
+  (employer-only), `get_application_resume` (§5).
+- **`job_interviews.py`** — `schedule_interview` (employer-only, upsert
+  per application, auto-advances the application's status to
+  `interview`), `get_interview_for_application`, `get_my_interviews`.
+- **`saved_jobs.py`** — exact `favorites.py` shape:
+  `save_job`/`unsave_job`/`is_job_saved`/`get_my_saved_jobs`.
+- **`career_profile.py`** — `get_my_career_profile`,
+  `update_my_career_profile` (upsert), `get_my_resume` (§5).
+- **`content_reports.py`** — `report_content`/`has_reported_content`,
+  generic across the `target_doctype` enum.
+
+**A real framework quirk found and fixed while testing:** a whitelisted
+method that returns Python `None` produces an HTTP response body of `{}`
+— **no `"message"` key at all**, not `{"message": null}` as might be
+assumed. `get_my_company`, `get_my_career_profile`, and
+`get_interview_for_application` all needed their "nothing found" case
+wrapped in an explicit dict (`{"company": None}` etc., matching the
+`{"call": None}` pattern already established in `calls.py`'s
+`get_active_call_for_conversation`) — caught by a live test's `KeyError:
+'message'`, fixed, redeployed, reverified.
+
+## 4. Deployment
+
+All 7 DocTypes + 7 API files deployed via the established ssh/cat
+pipeline, `bench migrate` (clean, `tabSouq Masr Job`/`Company`/
+`Job Application`/`Job Interview`/`Saved Job`/`Career Profile`/
+`Content Report` all confirmed via `SHOW TABLES`), web worker restarted.
+
+## 5. CV privacy — the load-bearing security requirement for this slice
+
+Resumes are uploaded with **`is_private=1`** (a new capability added to
+`lib/apiClient.ts`'s `frappeUploadFile`, which previously only ever
+uploaded public listing images — now takes an `{ isPrivate }` option,
+default `false`, so every existing caller's behavior is unchanged).
+
+**Two independent layers, both live-tested:**
+1. The raw private file URL (`/private/files/...`) is **not fetchable
+   with zero auth at all** — Frappe's own file serving already blocks
+   that, confirmed live (a request with no Authorization header at all
+   got a clean 403, not the file).
+2. Even for an *authenticated* non-participant, the file must never be
+   reachable — and Frappe's own private-file permission model is
+   **owner-only**, with no concept of "the employer of the job this
+   application is for." Relying on it would have let candidates read
+   each other's résumés' URLs if they ever leaked, but would have
+   wrongly blocked the actual employer too. So `get_application_resume`
+   bypasses Frappe's URL-based file serving entirely: it does its own
+   explicit candidate-or-employer check (same pattern as every
+   Chat/Calls endpoint), reads the file from disk, and returns the
+   content **base64-encoded directly in the JSON response** — the
+   client never sees a fetchable URL for a private resume at all.
+
+**Live-tested, 8 groups, all passed:** private upload confirmed
+(`file_url` starts with `/private/`), raw URL blocked with zero auth
+(403), candidate can download via the controlled endpoint (byte-for-byte
+match against the uploaded content), employer of that job can also
+download it, a **stranger is rejected with 403** (the core test), a
+**Guest is rejected** too. One real bug found mid-test: `get_file`
+returns a Python `str` (not `bytes`) for files that happen to decode as
+valid UTF-8 text — `base64.b64encode` requires bytes, so a `TypeError`
+surfaced on a `.txt` test file; fixed by encoding back to UTF-8 bytes
+when `get_file` returns a string, applied to both
+`get_application_resume` and `get_my_resume`.
+
+**Career Profile privacy is even simpler:** its DocType permissions
+grant read to the owner only, full stop — not even `if_owner`-adjacent
+logic for employers. An employer never sees a candidate's full Career
+Profile; they only ever see what that candidate explicitly submitted
+with a specific application (the Application's own `full_name`/`phone`/
+`email`/`cover_letter`/resume snapshot). There is no code path anywhere
+that exposes a Career Profile to a non-owner — verified live (a
+different user's `get_my_career_profile` correctly returns their own
+`None`/absence, never someone else's data).
+
+## 6. Live HTTP test results (`test_jobs.py`, 24 groups)
+
+Employer/Candidate/Stranger, real signin tokens, all passed:
+
+```
+1. Guest cannot create a company -> 403
+2. Employer creates a company (upsert) -> same id on re-save
+3. Public (Guest) reads the company profile -> raw owner id NOT exposed
+4. Candidate (no company) cannot post a job under employer's company -> 403
+5. Employer posts a real job -> responsibilities/requirements/skills/benefits round-trip correctly as real arrays
+6. Guest can view the published job
+7. Non-owner cannot edit/pause/delete -> 403 on all three
+8. Candidate applies -> is_mine=true
+9. Employer cannot apply to their own job -> rejected
+10. Re-applying returns the SAME application (idempotent)
+11. Job's applications_count incremented correctly
+12. Stranger CANNOT read the applicants list for a job they don't own -> 403
+13. Employer CAN read applicants for their own job -> full contact info visible
+14. Stranger CANNOT set application status -> 403
+15. Employer sets application status -> shortlisted
+16. Employer schedules an interview -> application status auto-advances to "interview"
+17. Stranger cannot see the interview (403); candidate can see their own
+18. Save/is-saved/unsave job cycle correct
+19. Career profile upsert + strict per-owner privacy (a different user's fetch returns none)
+20. Withdraw application -> candidate-only, stranger rejected
+21. Job pause/activate lifecycle + a paused job is NOT publicly visible (same PUBLIC_STATUSES gating as Listings)
+22. Search jobs with q/work_type/salary_min filters
+23. Invalid job id -> clean 404, no traceback/filesystem-path leakage
+24. Content report — shared Job/Company system scoped correctly per reporting user
+
+JOBS TESTS PASSED
+```
+
+Plus the separate 8-group CV privacy suite in §5.
+
+## 7. Security/ownership test results
+
+Covered directly above: Guest rejected on every mutation and every
+private read; non-owner rejected on edit/pause/delete/status-change/
+interview-scheduling/applicant-list-read, each verified against a real
+third user, not just reasoned about; CV access restricted to
+candidate-or-employer with a real stranger-gets-403 test; Career Profile
+never exposed to anyone but its owner; malformed/invalid input produces
+clean validation errors or 404s, never a Python traceback or filesystem
+path in the response body (checked explicitly in the test).
+
+## 8. Mobile changes
+
+- **New services** (7): `services/companyService.ts`,
+  `services/jobService.ts`, `services/jobApplicationService.ts`,
+  `services/jobInterviewService.ts`, `services/savedJobService.ts`,
+  `services/careerProfileService.ts`, `services/contentReportService.ts`
+  — same adapter/`ApiResult` pattern as every prior slice.
+- **`hooks/useMyCompany.ts`** (new) — "my company" resolved as: an
+  existing local mock company (legacy, kept working unchanged) **or**
+  the real backend one — avoids duplicating this fallback logic across
+  every screen that needs to know "does this user have a company yet."
+- **`app/jobs/my-company.tsx`** — a pre-existing local company keeps
+  editing locally, byte-for-byte; a new company (or no existing company
+  at all) now saves to the real backend, including a real logo upload.
+- **`app/jobs/post.tsx`** — real create for a real company; real edit
+  when `editId` is a real `JOB-#####` id (fetched and hydrated into the
+  same multi-step form); mock create/edit preserved unchanged for a
+  legacy local company. Fixed a naming collision caught before deploy:
+  the real `updateJob` import and the mock store's own `updateJob`
+  action needed distinct names (`updateJobMock`) once both existed in
+  the same file — the mock branch was accidentally about to call the
+  real async service with a mock-shaped object.
+- **`app/jobs/[id].tsx`** and **`app/jobs/apply/[id].tsx`** — split into
+  `Real*`/`Mock*` components exactly like every prior real/mock screen
+  split in this project (`app/seller/[id].tsx`, `app/chat/[id].tsx`).
+  Real apply flow uploads an actual resume file
+  (`expo-document-picker`, already a dependency) with `isPrivate: true`
+  instead of offering the mock's "generated resume" option (tied to the
+  deferred CV builder).
+- `isRealCompanyId`/`isRealJobId`/`isRealApplicationId` — same autoname-prefix-regex
+  pattern as every other domain (`LST-`, `CONV-`, `CALL-`, `COMP-`,
+  `JOB-`, `APP-`).
+
+**Verification:** `tsc --noEmit` clean, `expo export --platform ios`
+clean.
+
+## 9. What's still mock / explicitly out of scope this slice
+
+- **Deep CV builder** (`app/jobs/profile.tsx`,
+  `resume-builder.tsx`, `resume-view/[id].tsx`) — fully mock, per §1's
+  documented scope decision.
+- **`app/jobs/my-jobs.tsx`, `applicants.tsx`, `applications.tsx`,
+  `saved.tsx`, `company/[id].tsx`, `index.tsx`, `results.tsx`** — **not
+  yet migrated to the real backend.** The backend they'd need
+  (`get_my_jobs`, `get_applications_for_job`, `set_application_status`,
+  `schedule_interview`, `get_my_applications`, `get_my_saved_jobs`,
+  `get_company`, `get_jobs_by_company`, `search_jobs`) is **built and
+  live-tested** (§6) — this is a mobile-wiring gap, not a backend gap.
+  Disclosed explicitly per "migrate incrementally... remove only the
+  mocks that now have real backend equivalents" — these screens'
+  underlying mock data continues to work exactly as before for mock
+  jobs/companies, and are the natural next step for a following pass.
+- **Job Alerts** (`app/jobs/alerts.tsx`) — fully mock, deferred (§1).
+- **Company/Professional reviews** — deferred to Services (§1);
+  `content_reports.py` already has the target-doctype enum ready for it.
+- Company logo upload on `my-company.tsx` uses the existing public
+  (`is_private=0`) upload path, same as listing images — a company logo
+  is meant to be public, this is intentional, not an oversight.
+
+## 10. Blockers
+
+None for the scope actually claimed.
+
+## 11. Decision
+
+# ✅ GO — for the Jobs backend (Companies/Jobs/Applications/Interviews/Saved Jobs/Career Profile core) and the migrated mobile core loop (company setup → post/edit a job → view it → apply with a real CV)
+# ⏳ Mobile management/discovery screens (my-jobs, applicants, applications, saved, company profile, home, search) remain mock — backend ready, wiring pending, explicitly disclosed in §9
+
+Every mutation tested against Guest, authenticated owner, authenticated
+non-owner, invalid ids, and (for CV access specifically) a real
+unauthorized stranger — all live HTTP, all passed, including the two
+real bugs this slice's own testing surfaced (the `None`-return response
+shape, the `str`-vs-`bytes` resume encoding) and fixed before declaring
+GO. No Services/Notifications/Payments code touched. No regression to
+any prior GO slice.

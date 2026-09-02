@@ -16,6 +16,13 @@ souq_masr/api/v1/chat.py         — 6 endpoints (integrated, Phase 2B Slice 4 �
 souq_masr/api/v1/calls.py        — 7 endpoints (integrated, Phase 2B Slice 4/4B — real call signaling/state/security + get_rtc_token; audio infra built, two-device test still NO-GO)
 souq_masr/api/v1/reviews.py      — 5 endpoints (integrated, Phase 2B Reviews — seller reviews only)
 souq_masr/api/v1/sellers.py      — 1 endpoint (integrated, Phase 2B Reviews — get_seller_profile)
+souq_masr/api/v1/companies.py    — 3 endpoints (integrated, Phase 2B Jobs)
+souq_masr/api/v1/jobs.py         — 10 endpoints (integrated, Phase 2B Jobs — core loop wired; my-jobs/results/discovery mobile screens not yet migrated, see below)
+souq_masr/api/v1/job_applications.py — 7 endpoints (integrated, Phase 2B Jobs — includes private CV handling)
+souq_masr/api/v1/job_interviews.py — 3 endpoints (integrated, Phase 2B Jobs)
+souq_masr/api/v1/saved_jobs.py   — 4 endpoints (integrated, Phase 2B Jobs)
+souq_masr/api/v1/career_profile.py — 3 endpoints (integrated, Phase 2B Jobs — scalar fields + resume only, see below)
+souq_masr/api/v1/content_reports.py — 2 endpoints (integrated, Phase 2B Jobs — shared with Services once built)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -170,6 +177,31 @@ see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B sections.
 | Upload image(s) | ✅ Wired — Frappe's standard `/api/method/upload_file`, called from both create and edit flows (`services/listingService.ts`'s `uploadListingImage`), `is_private=0`, ownership-checked on attach, retain/remove/add all live-tested with no duplication | Auth | Done |
 | Mark as sold | ✅ Backend built+tested (`mark_listing_sold`), **wired** in `myads.tsx` (a direct "مباع" button, confirmed via Alert). ⏳ The mobile app's **existing chat-based** `confirmListingSold()` flow (`store/useAppStore.ts`) still only updates the local mock store — connecting *that specific trigger* to the real endpoint needs Chat itself to be real first (Phase 2E), since it lives inside a chat message | Auth (owner only) | Chat-triggered path: Medium |
 
+## Phase 2G — Jobs
+
+**New this pass:** the full Jobs backend (Companies, Job postings,
+Applications with private CV handling, Interviews, Saved Jobs, a
+scoped Career Profile, a shared content-report system) is **built and
+live-tested** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B
+Jobs section for the scope decisions (deep CV builder / Job Alerts /
+Company reviews deliberately deferred, documented there), the CV-privacy
+design, and the full live HTTP test results. Mobile is migrated for the
+core loop only.
+
+| Feature | Status | Auth | Priority |
+|---|---|---|---|
+| Company profile (create/update/public view) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.companies.*` — one company per owner (upsert). `app/jobs/my-company.tsx` wired (a pre-existing local company keeps editing locally, unchanged). | Auth (create/edit) / Guest (view) | Done |
+| Post/edit/pause/activate/close/delete a job | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.jobs.*`. `app/jobs/post.tsx` wired for create and edit (real `JOB-#####` ids fetched and hydrated); `app/jobs/[id].tsx` wired for viewing. | Auth (owner only for mutations) / Guest (view) | Done for post/edit/view |
+| Manage my jobs / applicants / interviews (`my-jobs.tsx`, `applicants.tsx`) | ⏳ **Backend built+tested** (`get_my_jobs`, `get_applications_for_job`, `set_application_status`, `schedule_interview`) — **mobile screens not yet migrated**, still reading local mock data | Auth (owner only) | High (natural next pass) |
+| Apply to a job | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.job_applications.apply_to_job` — idempotent, real uploaded CV (`is_private=1`) instead of the mock's "generated resume" option. `app/jobs/apply/[id].tsx` wired. | Auth | Done |
+| My applications / saved jobs (`applications.tsx`, `saved.tsx`) | ⏳ **Backend built+tested** (`get_my_applications`, `get_my_saved_jobs`) — **mobile screens not yet migrated** | Auth | Medium |
+| Company public profile + its jobs (`company/[id].tsx`) | ⏳ **Backend built+tested** (`get_company`, `get_jobs_by_company`) — **mobile screen not yet migrated**; company reviews specifically remain out of scope (deferred to Services) | Guest | Medium |
+| Jobs home / search (`index.tsx`, `results.tsx`) | ⏳ **Backend built+tested** (`search_jobs`) — **mobile screens not yet migrated**, so real jobs posted via the now-real `post.tsx` are not yet discoverable through these two screens specifically (still reachable via a direct id, e.g. from a share link) | Guest | High (closes the discovery gap) |
+| CV privacy (résumé access restricted to candidate/employer) | ✅ **Built, live-tested** — 8-group test suite including a real unauthorized-stranger-gets-403 case, see integration report §5 | Auth | Done |
+| Career Profile | ✅ **Built, live-tested, wired at the API level** — scalar fields + one résumé file only (deep CV builder deferred, see integration report §1). Not yet wired into `app/jobs/profile.tsx` (that screen stays mock, by design, until/unless the deep builder itself is migrated) | Auth (owner-only, always) | Scoped Done |
+| Job Alerts | ⏳ Not built — deferred, separable follow-up | Auth | Low |
+| Company/Professional reviews | ⏳ Not built — deferred to Services (shared `content_reports.py` already ready for it) | Auth (create) / Guest (list) | Medium |
+
 ---
 
 ## Real gap (not yet catalogued as its own phase) — Listing variants
@@ -187,4 +219,4 @@ a small, contained follow-up once basic Listings usage patterns are clear.
 
 - **Admin dashboard** (`admin/`) — untouched per this phase's explicit instruction, not evaluated here.
 - **Domain + SSL** for the backend — tracked in `BACKEND_PRODUCTION_READINESS.md` §12, not a mobile-integration gap.
-- **Reviews, Jobs, Services, Notifications, Payments** — explicitly excluded from Phase 2B by this phase's own instruction, not evaluated here. (Favorites/Saved Searches/Reports for **Listings** specifically are now built — Phase 2B Slice 3; real Chat + call signaling are now built — Phase 2B Slice 4 (VoIP audio itself excepted, see the Phase 2E table above), see `MOBILE_BACKEND_INTEGRATION_REPORT.md`. Favorites for Services/Jobs remain local-only, untouched.)
+- **Services, Notifications, Payments** — not yet built (Jobs and Reviews now are — see the Phase 2B Reviews section and Phase 2G above; Favorites/Saved Searches/Reports for **Listings** are built — Phase 2B Slice 3; real Chat + call signaling are built — Phase 2B Slice 4 (VoIP audio itself excepted, see the Phase 2E table above); see `MOBILE_BACKEND_INTEGRATION_REPORT.md` for all of them). Favorites for Services specifically remain local-only, untouched.

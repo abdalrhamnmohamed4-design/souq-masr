@@ -1,0 +1,37 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Job Application",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "format:APP-{#####}",
+  "naming_rule": "Expression",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["job", "full_name", "phone", "email", "resume_file", "cover_letter", "status"],
+  "fields": [
+    { "fieldname": "job", "label": "Job", "fieldtype": "Link", "options": "Souq Masr Job", "reqd": 1, "in_standard_filter": 1 },
+    { "fieldname": "full_name", "label": "Full Name", "fieldtype": "Data", "reqd": 1 },
+    { "fieldname": "phone", "label": "Phone", "fieldtype": "Data", "reqd": 1 },
+    { "fieldname": "email", "label": "Email", "fieldtype": "Data" },
+    { "fieldname": "resume_file", "label": "Resume File", "fieldtype": "Attach", "description": "Uploaded with is_private=1 — never served via a raw URL. Only readable through souq_masr.api.v1.jobs.get_application_resume, which does its own explicit candidate-or-employer check and returns the file content directly (base64), the same 'no blanket DocType permission, explicit Python check' pattern used for Chat/Calls — Frappe's own private-file permission model is owner-only and has no concept of 'employer of the linked job', so it can't be relied on here." },
+    { "fieldname": "cover_letter", "label": "Cover Letter", "fieldtype": "Text" },
+    { "fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "applied\nviewed\nshortlisted\ninterview\noffer\naccepted\nrejected\nwithdrawn", "default": "applied", "in_list_view": 1 }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
