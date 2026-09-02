@@ -1,0 +1,142 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Listing",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "format:LST-{#####}",
+  "naming_rule": "Expression",
+  "engine": "InnoDB",
+  "creation": "2026-08-29 00:00:00.000000",
+  "modified": "2026-08-29 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "title",
+    "description",
+    "status",
+    "category",
+    "brand",
+    "model",
+    "location",
+    "price",
+    "price_type",
+    "selling_type",
+    "condition",
+    "images",
+    "attributes",
+    "views",
+    "seller_type",
+    "brand_name",
+    "wholesale_price",
+    "min_wholesale_qty",
+    "discount_price",
+    "discount_ends_at"
+  ],
+  "fields": [
+    {
+      "fieldname": "title",
+      "label": "Title",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "in_list_view": 1,
+      "length": 70,
+      "description": "Matches the mobile post-ad wizard's title field (maxLength 70)"
+    },
+    { "fieldname": "description", "label": "Description", "fieldtype": "Text" },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Draft\nActive\nPaused\nSold\nRejected",
+      "default": "Active",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "Active/Paused/Sold are owner-controlled transitions (see souq_masr.api.v1.listings). Rejected is reserved for a future moderation flow — not exercised by the mobile app yet. No real review gate exists today (matches the mobile app's own MyAd status decision, store/useAppStore.ts's addMyAd comment), so new listings default straight to Active."
+    },
+    {
+      "fieldname": "category",
+      "label": "Category",
+      "fieldtype": "Link",
+      "options": "Souq Masr Listing Category",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    { "fieldname": "brand", "label": "Brand", "fieldtype": "Link", "options": "Souq Masr Brand" },
+    { "fieldname": "model", "label": "Model", "fieldtype": "Link", "options": "Souq Masr Model" },
+    {
+      "fieldname": "location",
+      "label": "Location",
+      "fieldtype": "Link",
+      "options": "Souq Masr Location",
+      "reqd": 1,
+      "in_standard_filter": 1,
+      "description": "Governorate, city, or area node — city/governorate display strings for the mobile app are derived server-side from this via get_location_path, not stored redundantly here."
+    },
+    { "fieldname": "price", "label": "Price", "fieldtype": "Currency", "default": "0" },
+    {
+      "fieldname": "price_type",
+      "label": "Price Type",
+      "fieldtype": "Select",
+      "options": "fixed\nnegotiable\nfree\ncontact\non_request\nper_day\nper_month\nper_hour\nper_unit",
+      "default": "negotiable",
+      "reqd": 1
+    },
+    {
+      "fieldname": "selling_type",
+      "label": "Selling Type",
+      "fieldtype": "Select",
+      "options": "\nsale\nrent\nwanted\nexchange\nfree\nservice\njob\nbusiness_sale\nauction\nother"
+    },
+    {
+      "fieldname": "condition",
+      "label": "Condition",
+      "fieldtype": "Select",
+      "options": "\nnew\nbrand_new\nlike_new\nexcellent\nvery_good\ngood\nfair\nused\nfor_parts\nrefurbished\nopen_box"
+    },
+    {
+      "fieldname": "images",
+      "label": "Images",
+      "fieldtype": "Table",
+      "options": "Souq Masr Listing Image",
+      "description": "Ordered by row position (idx). Each row's file_url must belong to a File uploaded by this listing's owner — enforced in souq_masr.api.v1.listings, not at the DocType level (a plain Table field can't express that constraint)."
+    },
+    {
+      "fieldname": "attributes",
+      "label": "Attributes",
+      "fieldtype": "Table",
+      "options": "Souq Masr Listing Attribute Value",
+      "description": "Instance values for this listing's category.fields (Souq Masr Listing Attribute on the category doctype defines the schema; this table holds this one listing's actual key→value pairs)."
+    },
+    { "fieldname": "views", "label": "Views", "fieldtype": "Int", "default": "0", "read_only": 1 },
+    {
+      "fieldname": "seller_type",
+      "label": "Seller Type",
+      "fieldtype": "Select",
+      "options": "individual\nbusiness",
+      "default": "individual"
+    },
+    { "fieldname": "brand_name", "label": "Business Brand Name", "fieldtype": "Data", "description": "Free-text business brand name, distinct from the taxonomy Brand link — mirrors mobile Listing.brandName" },
+    { "fieldname": "wholesale_price", "label": "Wholesale Price", "fieldtype": "Currency" },
+    { "fieldname": "min_wholesale_qty", "label": "Min Wholesale Qty", "fieldtype": "Int" },
+    { "fieldname": "discount_price", "label": "Discount Price", "fieldtype": "Currency" },
+    { "fieldname": "discount_ends_at", "label": "Discount Ends At", "fieldtype": "Datetime" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "read": 1, "create": 1 },
+    { "role": "All", "if_owner": 1, "write": 1, "delete": 1 },
+    { "role": "Guest", "read": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

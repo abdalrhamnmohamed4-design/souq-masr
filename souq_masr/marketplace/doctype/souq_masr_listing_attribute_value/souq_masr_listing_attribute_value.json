@@ -1,0 +1,35 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Listing Attribute Value",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "creation": "2026-08-29 00:00:00.000000",
+  "modified": "2026-08-29 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["attr_key", "value"],
+  "fields": [
+    {
+      "fieldname": "attr_key",
+      "label": "Key",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Matches a Souq Masr Listing Attribute (schema, on the category) attr_key — this table holds the VALUE for one listing, the other table holds the field DEFINITION shared by every listing in a category. Do not confuse the two."
+    },
+    { "fieldname": "value", "label": "Value", "fieldtype": "Data", "in_list_view": 1 }
+  ],
+  "permissions": [],
+  "sort_field": "idx",
+  "sort_order": "ASC",
+  "row_format": "Dynamic"
+}
