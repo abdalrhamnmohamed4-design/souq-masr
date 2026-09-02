@@ -508,6 +508,29 @@ def get_public_listings(page=1, limit=PAGE_SIZE_DEFAULT, sort=None):
 
 
 @frappe.whitelist(allow_guest=True)
+def get_seller_listings(seller_id, page=1, limit=PAGE_SIZE_DEFAULT, sort=None):
+	"""إعلانات بائع معيّن الفعّالة بس — Active بس، نفس PUBLIC_STATUSES مبدأ
+	get_public_listings بالظبط، مفيش Draft/Paused/Sold/Rejected بيسرّب هنا.
+	بيقابل app/seller/[id].tsx's شبكة "إعلانات البائع" (Phase 2B — Reviews
+	vertical، جزء من تفعيل صفحة البروفايل لبائع حقيقي)."""
+	if not seller_id or not frappe.db.exists("User", seller_id):
+		frappe.throw(frappe._("Seller not found"), frappe.DoesNotExistError)
+	page, limit, offset = _paginate(page, limit)
+	filters = {"owner": seller_id, "status": "Active"}
+	total = frappe.db.count("Souq Masr Listing", filters)
+	rows = frappe.get_all(
+		"Souq Masr Listing",
+		filters=filters,
+		fields=["name", "title", "price", "price_type", "condition", "category", "location", "views", "status", "creation"],
+		order_by=_sort_order_by(sort),
+		limit_start=offset,
+		limit_page_length=limit,
+	)
+	favorited_ids = _favorited_ids_for_current_user([r.name for r in rows])
+	return {"items": [_serialize_summary(r, favorited_ids) for r in rows], "total": total, "page": page, "limit": limit}
+
+
+@frappe.whitelist(allow_guest=True)
 def search_listings(q=None, category_key=None, condition=None, field_filters=None, city_governorate=None, sort=None, page=1, limit=PAGE_SIZE_DEFAULT):
 	"""مطابق لروح app/results.tsx's الحالي: بحث نصي + تصنيف (+ كل فروعه) +
 	حالة + فلاتر ديناميكية (attributes) + محافظة + ترتيب، كلهم اختياريين

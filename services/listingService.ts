@@ -426,4 +426,11 @@ export async function incrementListingViews(listingId: string): Promise<ApiResul
   return frappePost(`${NS}.increment_listing_views`, { listing_id: listingId });
 }
 
+/** إعلانات بائع حقيقي المُفعّلة بس — لصفحة بروفايل البائع (Reviews vertical). */
+export async function getSellerListings(sellerId: string, page = 1, limit = 20, sort?: ListingSortKey): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
+  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_seller_listings`, { seller_id: sellerId, page, limit, sort });
+  if (r.status !== 'success') return r;
+  return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total, page: r.data.page } };
+}
+
 export type { ProductVariant };

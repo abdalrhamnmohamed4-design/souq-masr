@@ -13,7 +13,9 @@ souq_masr/api/v1/favorites.py    — 4 endpoints (integrated, Phase 2B Slice 3 �
 souq_masr/api/v1/saved_searches.py — 3 endpoints (integrated, Phase 2B Slice 3)
 souq_masr/api/v1/reports.py      — 2 endpoints (integrated, Phase 2B Slice 3 — Listings only)
 souq_masr/api/v1/chat.py         — 6 endpoints (integrated, Phase 2B Slice 4 — real conversations/messages, server timestamps)
-souq_masr/api/v1/calls.py        — 6 endpoints (integrated, Phase 2B Slice 4 — real call signaling/state/security; NOT real audio, see below)
+souq_masr/api/v1/calls.py        — 7 endpoints (integrated, Phase 2B Slice 4/4B — real call signaling/state/security + get_rtc_token; audio infra built, two-device test still NO-GO)
+souq_masr/api/v1/reviews.py      — 5 endpoints (integrated, Phase 2B Reviews — seller reviews only)
+souq_masr/api/v1/sellers.py      — 1 endpoint (integrated, Phase 2B Reviews — get_seller_profile)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -77,7 +79,7 @@ below is genuinely not built yet.
 | List/search listings (`app/results.tsx`) | ✅ Backend built+tested (`search_listings` — `q, category_key, condition, field_filters, city_governorate, sort, page, limit`). ✅ **Wired**, incl. debounced search + "load more" pagination. `nearest`/`favoritesFirst` sort remain client-side-only (need device geo / real Favorites, both out of scope). | Guest | Done for this slice |
 | Listing detail (`app/detail/[id].tsx`) | ✅ Backend built+tested (`get_listing`). ✅ **Wired** — real listings (`LST-#####` ids) fetch from the backend; local ids unchanged. | Guest | Done |
 | Listing discovery by category/location (`app/(tabs)/home.tsx`) | ✅ Backend built+tested (`get_listings_by_category`, `get_listings_by_location`). ✅ **Wired** — every home listing section (latest/cheapest/nearby/cars/real-estate) is real now; "featured" stays honestly empty (no promotion system). | Guest | Done for this slice |
-| Seller public profile (`app/seller/[id].tsx`) | ⏳ **Not built.** `get_listing`/`get_public_listings` embed minimal seller display fields (name/phone/member-since/ads-count) directly in the listing response as a pragmatic substitute, but there's still no standalone seller-profile endpoint (reviews, full ad history, etc.) | Guest | High |
+| Seller public profile (`app/seller/[id].tsx`) | ✅ **Built, live-tested, wired** (Reviews slice) — `souq_masr.api.v1.sellers.get_seller_profile`, `souq_masr.api.v1.listings.get_seller_listings`, `souq_masr.api.v1.reviews.get_seller_reviews`. Previously a real dead end for every real listing (see integration report's Reviews section §1). | Guest | Done |
 | Increment view count | ✅ Backend built+tested+wired (`increment_listing_views`, called from `app/detail/[id].tsx` for real listings) | Guest | Done |
 | Favorites (toggle/list) | ✅ Built, live-tested, wired — see Phase 2D table below (moved there, this row kept only as a pointer) | Guest reads `false` / Auth mutations | Done |
 | Saved searches sync | ✅ Built, live-tested, wired — see Phase 2D table below | **Auth** | Done |
@@ -110,7 +112,8 @@ wallet remain unbuilt — none of those domains were touched this slice.
 |---|---|---|---|
 | Favorites — Listings (toggle/list) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.favorites.{add_favorite,remove_favorite,is_favorite,get_my_favorites}` — normalized `Souq Masr Listing Favorite` DocType, `is_favorite` embedded in every listing response. `app/favorites.tsx`, `app/detail/[id].tsx`, `RowCard`, home.tsx's `MiniCard` all real-backend-aware for real listings (local store made real-aware internally — see integration report). | Auth (mutations); Guest reads `false` | Done for Listings |
 | Favorites — Services/Jobs | ⏳ Not built — the shared local `favorites` Record still fully backs these, untouched, by design (out of scope this phase) | Auth | Medium |
-| Reviews (add/list for a seller) | ⏳ Not built | Auth (create) / Guest (list) | Medium |
+| Reviews — Sellers (add/edit/delete/list + aggregate rating) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.reviews.*` + `souq_masr.api.v1.sellers.get_seller_profile` — `Souq Masr Review` DocType (no blanket read, prevents a phone-number leak via generic REST), eligibility gated on a real conversation with the seller, upsert-on-resubmit. `app/seller/[id].tsx` now works for real sellers for the first time (previously a dead end — see integration report §1). | Auth (create/edit/delete) / Guest (list, summary) | Done for Sellers |
+| Reviews — Professionals/Companies (Jobs/Services) | ⏳ Not built — deferred to the Jobs/Services slices themselves (needs a real Company/Professional model first) | Auth (create) / Guest (list) | Medium |
 | Reports — Listings | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.reports.{report_listing,has_reported}` — `Souq Masr Listing Report` DocType, create-only permissions (no read path for any non-admin role, by design). `app/detail/[id].tsx`'s report flow no longer fakes success for real listings. | Auth | Done for Listings |
 | Saved searches sync (`store`'s `savedSearches`) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.saved_searches.{create_saved_search,get_my_saved_searches,delete_saved_search}` — `Souq Masr Saved Search` DocType, schema-ready `location`/`min_price`/`max_price`/`sort` fields not yet populated (no UI collects them). `app/results.tsx`/`app/saved-searches.tsx` wired; a pre-existing filter-restoration bug fixed alongside. | **Auth** | Done |
 | Block/unblock seller | ⏳ Not built | Auth | Low |

@@ -2765,3 +2765,214 @@ NO-GO — "do not convert NO-GO into GO because the code compiles." §13
 above is the exact sequence to run it; report back the actual result
 (pass, partial, or specific failure) and this section will be updated to
 GO or to document whatever the real test surfaces.
+
+---
+
+# Phase 2B — Reviews (Seller Reviews)
+
+**Scope, exactly:** real seller reviews (rating + comment), a working
+seller-profile page for real sellers (a real, pre-existing dead end this
+slice fixes as a necessary dependency — see §1), aggregate ratings, and
+the eligibility/privacy/security rules the mock UI never had. **Not in
+scope:** professional/company reviews (`store/useJobsStore.ts`'s
+separately-shaped review concept, used by `app/services/professional/[id].tsx`
+and `app/jobs/company/[id].tsx`) — those target Jobs/Services entities
+that don't have a real backend yet; building a `Company`/`Professional`
+model early just to attach reviews to it would invent structure ahead of
+the domains that actually own it. They get real review support as part
+of the Jobs and Services slices themselves.
+
+## 1. Audit
+
+`app/seller/[id].tsx` existed already (built for a general "seller
+profile" concept, not seeded with any mock data — `mock/users.ts`'s
+`sellers` registry is deliberately empty). `useSeller(id)`/`useSellerReviews(id)`
+in `store/useAppStore.ts` are 100% local; `Review.rating`'s aggregate on
+the seller card is computed client-side from the local `reviews` array,
+not stored separately — replicated server-side the same way (§3).
+
+**A real, pre-existing gap found by this audit:** `app/detail/[id].tsx`
+already navigates to `/seller/${seller.id}` for both mock and real
+listings. For a real listing, `seller.id` is a real Frappe User docname
+— but nothing ever built a way to fetch that user's public profile, so
+tapping "seller" on any real listing has always landed on "البائع مش
+موجود" (seller not found). This was a real dead end since Phase 2B Slice
+1, only surfaced now because Reviews needs a working profile page to
+attach to. Fixed as part of this slice (`get_seller_profile`, §3).
+
+**Eligibility rule — the existing mock has none at all** (`addReview`
+just pushes a row unconditionally; any authenticated user can rate any
+seller, unlimited times). Too permissive for a real backend per this
+slice's own instruction. **Chosen rule, documented in `reviews.py`'s own
+module docstring:** the reviewer must have at least one real `Souq Masr
+Conversation` with that seller (either direction) — i.e. they've
+actually messaged them about a real listing. This mirrors the exact
+precedent already set by phone-number visibility (Slice 4's
+`_phone_visible_to_viewer`): "a real conversation exists" is this
+codebase's established bar for "these two users have a real
+relationship." A stronger "verified completed purchase" gate would be
+more precise but needs the Sale Confirmation Flow migrated to real
+listings first (still mock-only) — noted as a natural future tightening,
+not built here to avoid unrelated scope creep.
+
+## 2. Backend DocTypes
+
+| DocType | Autoname | Fields | Permissions |
+|---|---|---|---|
+| `Souq Masr Review` | `hash` | `seller` (Link User, reqd), `rating` (Int, reqd, 1-5), `comment` (Small Text) | Admin full; `All`: `create=1`; `All`+`if_owner`: `read=1,write=1,delete=1` — **deliberately no blanket `All: read=1`** |
+
+**Why no blanket read, even though reviews are meant to be public:**
+Frappe `User` docnames in this app are phone-derived (e.g.
+`201066660001@phone.souqmasr.local`). `Souq Masr Review`'s standard
+`owner` field holds the reviewer's docname — if the DocType granted
+generic REST read access, anyone could read every review's raw `owner`
+value via `/api/resource/Souq Masr Review` and recover reviewers' phone
+numbers, a real privacy leak with zero legitimate use. All public
+reading instead goes through this file's own whitelisted methods, whose
+serialization deliberately never includes the raw `owner`/`reviewer`
+field — only a display name (§4).
+
+`Souq Masr Review.validate()` re-checks rating range and self-review
+server-side (defense in depth, matching `Souq Masr Listing`'s own
+`validate()` pattern) and blocks a genuine duplicate `(owner, seller)`
+pair — the primary duplicate-prevention mechanism is `submit_review`'s
+own find-existing-and-update logic (§3), this is the second line of
+defense for the unlikely race condition, same pattern as Favorites.
+
+## 3. API endpoints
+
+**`souq_masr/api/v1/reviews.py`** (new):
+- `submit_review(seller_id, rating, comment=None)` — **upsert**: a
+  second submission from the same reviewer updates their existing row
+  instead of creating a duplicate (this is also the mobile app's de
+  facto "edit my review," since the mock UI never had a separate edit
+  flow — resubmitting the rating sheet naturally becomes an edit).
+  Validates: signed in, seller is a real `User`, not reviewing yourself,
+  rating in 1-5, and the eligibility rule from §1.
+- `get_seller_reviews(seller_id, page, limit)` — `allow_guest=True`,
+  paginated, newest-first. Each row: display name (`reviewer_name`,
+  first name only), rating, comment, timestamp, and `is_mine` (computed
+  server-side by comparing to the current session — lets the mobile
+  client know "this is your review" **without ever transmitting the
+  raw reviewer id to any client**, verified live in §6).
+- `get_seller_rating_summary(seller_id)` — `allow_guest=True`, one
+  SQL aggregate query (`avg`/`count`), not a full-table fetch into
+  Python (avoids the N+1/full-scan pattern this slice's own instructions
+  warn against).
+- `has_reviewed(seller_id)` — auth; lets the mobile app prefill the
+  rating sheet with the user's existing rating/comment before they
+  resubmit (same `has_reported`/`is_favorite` precedent pattern already
+  used elsewhere in this codebase).
+- `delete_review(seller_id)` — auth; deletes only the caller's own
+  review of that seller (no generic "delete any review by id" surface —
+  the `(owner, seller)` relationship is already unique, so there's
+  nothing else to scope it by).
+
+**`souq_masr/api/v1/sellers.py`** (new): `get_seller_profile(seller_id)`
+— `allow_guest=True`; name, member-since, active ads count, rating
+summary, and a phone field gated by a profile-page-appropriate variant
+of the same phone-privacy rule (any real conversation with this seller,
+not scoped to one specific listing since a profile isn't listing-scoped).
+
+**`souq_masr/api/v1/listings.py`** (extended): `get_seller_listings(seller_id, page, limit, sort)`
+— `allow_guest=True`, reuses the exact same `_serialize_summary`/
+`_paginate`/`_favorited_ids_for_current_user`/`_sort_order_by` helpers as
+every other public listing endpoint; `status="Active"` only, same as
+`get_public_listings` (no Draft/Paused/Sold/Rejected leaking through a
+seller's public profile).
+
+## 4. Live HTTP test results
+
+Buyer/seller/stranger, real listing/conversation, real signin tokens —
+14 groups, all passed:
+
+```
+=== 1. Guest cannot submit a review === status=403
+=== 2. Stranger with NO conversation is rejected (eligibility rule) === status=403
+=== 3. Seller cannot review themself === status=417
+=== 4. Buyer starts a real conversation, THEN can review === review created (is_mine: True)
+=== 5. Invalid rating (0, 6) rejected === both rejected correctly
+=== 6. Submitting again from the SAME buyer UPDATES, not duplicates === same review id, rating updated 4→5
+=== 7. Invalid seller_id -> 404 === status=404
+=== 8. Public review list (Guest) — reviewer identity NOT leaked === reviewer_name present, raw reviewer/owner field absent, is_mine=false for Guest
+=== 9. Rating summary aggregate === {'average': 5.0, 'count': 1}
+=== 10. has_reviewed — true for buyer, false for stranger === correct for both
+=== 11. Seller profile endpoint — phone privacy enforced === guest: phone=None; stranger (no chat): phone=None; buyer (real chat): phone visible
+=== 12. Seller's own listings, public === total=1
+=== 13. Delete review — only the reviewer can remove their own === stranger delete = no-op (nothing to delete); buyer delete = removed; aggregate count back to 0
+=== 14. Traceback leakage check — malformed input === no "Traceback"/filesystem path in the response body
+
+REVIEWS TESTS PASSED
+```
+
+## 5. Security/ownership test results
+
+Covered directly in §4's groups 1-3, 7, 13-14: Guest rejected on every
+mutation; a real third user (with no conversation) rejected specifically
+by the eligibility rule, not just generic auth; self-review blocked;
+invalid seller id → clean 404 (no traceback); `delete_review` scoped to
+the caller's own row only, verified both the no-op (nothing to delete)
+and the actual-delete case; malformed input (`rating: "not-a-number"`)
+produces a clean validation error, never a Python traceback or
+filesystem path in the response body.
+
+## 6. Mobile changes
+
+- `services/reviewService.ts` (new) — `submitReview`, `getSellerReviews`,
+  `getSellerRatingSummary`, `hasReviewed`, `deleteReview`,
+  `isRealSellerId()` (`id !== 'me'` — sufficient because
+  `mock/users.ts`'s `sellers` registry is always empty; there has never
+  been any other mock seller id).
+- `services/sellerService.ts` (new) — `getSellerProfile`.
+- `services/listingService.ts` (extended) — `getSellerListings`.
+- `app/seller/[id].tsx` — **split into `RealSellerProfileScreen`
+  (isRealSellerId) and `MockSellerProfileScreen`** (unchanged, byte-for-byte
+  the prior implementation) rather than interleaving branches through one
+  component, mirroring `app/chat/[id].tsx`'s and `app/detail/[id].tsx`'s
+  established real/mock separation pattern. The real screen: profile +
+  listings + reviews fetched together via `combineApiResultsTuple`
+  (one `ApiStateView` for the whole page), prefills the rating sheet from
+  `has_reviewed` when the user already reviewed this seller (their
+  existing rating/comment, making "قيّم البائع" become "عدّل تقييمك"),
+  and adds a "حذف تقييمي" action on the user's own review row (a real
+  server capability the original mock UI never exposed a way to trigger).
+  "راسل البائع" now starts a real conversation via the seller's first
+  active listing.
+
+**Verification:** `tsc --noEmit` clean, `expo export --platform ios`
+clean (bundle built successfully).
+
+## 7. What's still mock / out of scope this slice
+
+- Professional/company reviews (`store/useJobsStore.ts`) — untouched,
+  deferred to the Jobs/Services slices per §0 above.
+- `responseRate` (shown on the mock seller card) has no real-backend
+  equivalent yet — the real profile card shows ads count + rating only,
+  honestly, rather than a fabricated response-rate number.
+- No admin moderation of reviews (matches the same explicit
+  out-of-scope decision already made for Listing Reports in Slice 3).
+
+## 8. Blockers
+
+None.
+
+## 9. Decision
+
+# ✅ GO — for Seller Reviews specifically
+
+Backend: 1 new DocType (permission-shape chosen specifically to prevent
+a phone-number leak via generic REST, not just copy-pasted from
+Favorites), 6 new/extended endpoints across 2 new files + 1 extended
+file, all live-tested including the eligibility rule, upsert/dedup
+behavior, aggregate correctness, privacy (reviewer identity never
+exposed raw, phone gated the same way as everywhere else in this app),
+and traceback-leakage checks. One real pre-existing gap fixed as a
+necessary dependency (`get_seller_profile` — real sellers had no
+profile page at all before this).
+
+Mobile: `app/seller/[id].tsx` now works for real sellers for the first
+time; mock sellers untouched byte-for-byte. `tsc`/`expo export` both
+clean.
+
+**No Jobs/Services/Notifications/Payments code touched.** No regression
+to any prior GO slice.
