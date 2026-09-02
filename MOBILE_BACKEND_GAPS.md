@@ -288,3 +288,108 @@ a small, contained follow-up once basic Listings usage patterns are clear.
 - **Admin dashboard** (`admin/`) — untouched per this phase's explicit instruction, not evaluated here.
 - **Domain + SSL** for the backend — tracked in `BACKEND_PRODUCTION_READINESS.md` §12, not a mobile-integration gap.
 - **Services, Notifications, Payments** — not yet built (Jobs and Reviews now are — see the Phase 2B Reviews section and Phase 2G above; Favorites/Saved Searches/Reports for **Listings** are built — Phase 2B Slice 3; real Chat + call signaling are built — Phase 2B Slice 4 (VoIP audio itself excepted, see the Phase 2E table above); see `MOBILE_BACKEND_INTEGRATION_REPORT.md` for all of them). Favorites for Services specifically remain local-only, untouched.
+
+---
+
+## Master Production Readiness + Hardening Pass — findings
+
+Full-stack security/production audit (2026-09-03), not a feature pass.
+See `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s section of the same name
+for the complete report (test evidence, all 16 sections). Summary here:
+
+### P0 — CRITICAL, NOT FIXED, BLOCKS REAL PRODUCTION USE
+
+**`souq_masr.api.v1.auth.signin(name, phone, country_iso)` has no
+phone-ownership verification (no OTP, no password).** Anyone who knows
+an existing user's phone number can call `signin` with that phone
+number and receive a **fresh, valid `api_key`/`api_secret` pair for
+that user's real account** — full account takeover, live-proven with a
+safe self-contained proof-of-concept (two throwaway test accounts, no
+real user touched; see integration report). Once obtained, those
+credentials grant everything that account can do: read/drain their
+real-money wallet (`payments.get_my_wallet`, `payments.transfer_balance`
+— no additional check beyond "authenticated as this user"), read their
+private chats, act as them on Jobs/Services, etc. This was a **known,
+explicitly documented product decision from before any real backend
+existed** (`app/signin.tsx`'s own header comment, `ACCESS_CONTROL.md`'s
+"no OTP, no password" note) — it was a reasonable placeholder against
+mock/local data, but is now a live P0 vulnerability against a real
+backend with real money and real private data. **Not fixed in this
+pass** — a correct fix (real SMS OTP) requires an external SMS
+provider and credentials the assistant does not have and should not
+choose unilaterally (same "do not invent a payment provider" precedent
+already applied to Payments) — this needs the product owner's explicit
+decision on a provider before it can be built.
+
+### P2 — FIXED this pass (file-ownership checks, matching existing
+### precedent elsewhere in the same codebase)
+
+Three write endpoints accepted an arbitrary `file_url` for a
+public-facing image with **no check that the caller actually uploaded
+that file** — inconsistent with the established pattern already used
+everywhere else in this codebase (`listings.py`'s `_attach_images`,
+`career_profile.py`'s `resume_file_url`, `chat.py`'s
+`send_image_message`, `job_applications.py`'s `resume_file_url`), all
+of which verify `File.owner == frappe.session.user` before attaching.
+Fixed by adding the same check:
+- `companies.py`'s `create_or_update_my_company` — `logo`/`cover`.
+- `professional_profiles.py`'s `create_or_update_my_profile` — `photo`.
+- `services.py`'s `create_service`/`update_service` — `image_urls`
+  (new `_to_json_list_owned` helper, mirrors `_attach_images`).
+
+Live-verified: an unowned/nonexistent `file_url` is now rejected
+(`403 PermissionError`) on all three; normal use (own files, or
+omitting the field entirely) is unaffected — 6/6 live tests passed,
+full Jobs+Services regression (47/47) and general regression (6/6)
+re-run clean afterward.
+
+### P3 — documented, not fixed (minor, judgment call)
+
+- `sellers.py`'s `get_seller_profile(seller_id)` accepts **any** real
+  Frappe `User` docname, not just users who are actually sellers (have
+  a listing) — a minor account-enumeration surface (confirms whether a
+  given phone-derived docname has an account, returns its first name).
+  Not fixed: the practical exposure is low (no phone number is
+  returned unless a real conversation exists, per
+  `_phone_visible_on_profile`), and restricting it risks breaking a
+  legitimate "view a seller's profile from a review/reference" flow
+  for a seller who currently has zero active listings.
+
+### Confirmed clean / working as designed (no action needed)
+
+- No silent mock-fallback-on-API-failure anywhere in `lib/apiClient.ts`
+  or any screen — every failure path returns a typed error, verified
+  by code reading, not assumption.
+- Credentials stored in `expo-secure-store` (Keychain/Keystore), never
+  `AsyncStorage`.
+- No `console.log`/`console.warn` outside `lib/devLog.ts` (production
+  no-ops, redacts sensitive keys) and one `__DEV__`-guarded i18n line.
+- No secrets, keys, or credentials found committed anywhere in git
+  history (checked file-name patterns and content patterns).
+- `allow_error_traceback` confirmed still disabled live (re-verified,
+  not just read from an old report) — malformed requests return
+  `{"exc_type":"..."}` only, no stack traces.
+- Every other `ignore_permissions=True`/`force=1` use in
+  `souq_masr/api/v1/*.py` re-checked this pass against its
+  corresponding explicit ownership/participant check — all correct
+  (Listings, Jobs, Job Applications, Job Interviews, Saved Jobs,
+  Services, Companies, Professional Profiles, Career Profile,
+  Chat, Calls, Reviews, Notifications, Payments, Content Reports,
+  Saved Searches, Favorites, Sellers).
+- Wallet (`Souq Masr Wallet`) DocType permissions confirmed
+  `All+if_owner: read only` — no write path exists outside
+  `payments.py`'s own server-derived `_credit`/`_debit`, even via a
+  direct `/api/resource/` call.
+- Negative/zero amounts rejected live for both `create_topup_request`
+  and `transfer_balance`.
+- `calls.get_rtc_token` re-verified live end-to-end this pass: real
+  JWT issued to an actual call participant, a real non-participant
+  gets `403`, room correctly scoped to the specific call. LiveKit
+  server-side implementation is genuinely functional — the only
+  remaining gap is the physical two-device audio test, unchanged from
+  before this pass.
+- Zero push-notification code exists anywhere in the mobile app (no
+  `expo-notifications` token registration call site found by repo-wide
+  search) and zero device-token field/endpoint exists in the backend —
+  this is **not implemented**, more precise than "untested."
+

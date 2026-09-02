@@ -86,7 +86,13 @@ def create_or_update_my_profile(name, description, trade_key=None, photo=None, y
 	doc.working_hours = working_hours
 	doc.phone = phone
 	doc.whatsapp = whatsapp
+	# نفس فحص career_profile.py's resume_file_url بالظبط — منع إرفاق ملف
+	# حد تاني رفعه (حتى لو عام) كصورتك الشخصية من غير تحقق ملكية.
 	if photo is not None:
+		if photo:
+			file_row = frappe.db.get_value("File", {"file_url": photo}, "owner")
+			if not file_row or file_row != user:
+				frappe.throw(frappe._("You can only attach a file you uploaded yourself"), frappe.PermissionError)
 		doc.photo = photo
 	if existing:
 		doc.save(ignore_permissions=True)

@@ -58,6 +58,29 @@ def _parse_json_list(value):
 		return []
 
 
+# لقيّة أمان في الجولة الحالية (Master Production Readiness pass) —
+# image_urls_json كانت بتتحط من غير أي تحقق ملكية للملفات الأصلية، عكس
+# نفس النمط المستخدم في listings.py's _attach_images/career_profile.py's
+# resume_file_url بالظبط. أي مستخدم كان يقدر يمرّر file_url صورة حد تاني
+# رفعها (حتى لو عامة) كصورة خدمته هو.
+def _to_json_list_owned(value, user):
+	urls = value
+	if isinstance(value, str):
+		try:
+			urls = json.loads(value)
+		except Exception:
+			urls = []
+	if not isinstance(urls, list):
+		urls = []
+	for url in urls:
+		if not url:
+			continue
+		file_row = frappe.db.get_value("File", {"file_url": url}, "owner")
+		if not file_row or file_row != user:
+			frappe.throw(frappe._("You can only attach images you uploaded yourself"), frappe.PermissionError)
+	return json.dumps(urls, ensure_ascii=False)
+
+
 def _paginate(page, limit):
 	page = cint(page) or 1
 	limit = cint(limit) or PAGE_SIZE_DEFAULT
@@ -128,7 +151,7 @@ def create_service(category_key, title, description=None, trade_key=None, price=
 	doc.price_type = price_type or "starting_from"
 	doc.service_areas_json = _to_json_list(service_areas)
 	doc.duration = duration
-	doc.image_urls_json = _to_json_list(image_urls)
+	doc.image_urls_json = _to_json_list_owned(image_urls, user)
 	doc.availability = availability
 	doc.offer_price = cint(offer_price) if offer_price not in (None, "") else None
 	doc.offer_ends_at = offer_ends_at
@@ -155,7 +178,8 @@ def update_service(service_id, **kwargs):
 			setattr(doc, f, cint(kwargs[f]) if kwargs[f] not in (None, "") else None)
 	for mobile_key, doc_field in list_fields.items():
 		if mobile_key in kwargs:
-			setattr(doc, doc_field, _to_json_list(kwargs[mobile_key]))
+			value = _to_json_list_owned(kwargs[mobile_key], user) if mobile_key == "image_urls" else _to_json_list(kwargs[mobile_key])
+			setattr(doc, doc_field, value)
 
 	doc.save(ignore_permissions=True)
 	return _serialize(doc)

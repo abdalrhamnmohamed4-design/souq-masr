@@ -4189,3 +4189,372 @@ NO-GO** — untouched this pass, still pending a real two-physical-device
 test the user has to run personally. Push notification transport
 remains not built (§ Phase 2B — Notifications, §8). No other feature
 vertical was started after this one, per instruction.
+
+# Master Production Readiness + Hardening Pass
+
+Full repository audit across mobile, backend, database, infrastructure,
+and security — not a feature-development pass. Scope: understand the
+whole architecture, find real defects, fix every safe P0/P1/safe-P2
+finding, verify every fix live, and report honestly on what remains.
+
+## 1. Discovery
+
+Mapped: 24 mobile `services/*.ts`, 24 backend `api/v1/*.py` modules, 29
+DocTypes, `app/` route tree, `lib/apiClient.ts` (single HTTP choke
+point), `lib/authCredentials.ts` (SecureStore), `config/env.ts`
+(dev/staging/production split), `app.json`/`eas.json` (build config),
+LiveKit (`calls.py` + `services/rtcService.ts`), push notifications
+(none found), and the two existing infra reports
+(`BACKEND_PRODUCTION_READINESS.md`, `ACCESS_CONTROL.md`).
+
+## 2. Mock/fake-behavior audit
+
+Swept for TODO/FIXME/HACK, `console.*` outside `lib/devLog.ts`, and any
+"API failed → silently use mock and show success" pattern. **None
+found.** `lib/apiClient.ts` is the single point every real network call
+goes through and it never falls back to mock data on failure — it
+always returns a typed `ApiResult` error (`no_internet`,
+`backend_unavailable`, `unauthorized`, etc.); screens that show mock
+rows alongside real ones (the established `my-jobs.tsx`/`myads.tsx`
+merge pattern) do so only for pre-existing *local* mock entries that
+predate the real backend, never as an error fallback. `lib/devLog.ts`
+redacts sensitive keys and is a no-op in production builds; the only
+other `console.*` call in the repo is a `__DEV__`-guarded i18n warning
+with no sensitive data.
+
+## 3. Authentication — CRITICAL finding (P0, not fixed)
+
+`souq_masr.api.v1.auth.signin(name, phone, country_iso)` — the mobile
+app's only login mechanism — performs **no verification that the
+caller actually owns the phone number supplied**. It is a find-or-create:
+if a `User` with that `mobile_no` already exists, `signin` re-issues a
+**fresh, valid `api_key`/`api_secret` pair for that existing account**
+and returns it to whoever called it. There is no OTP, no password, no
+proof of possession of any kind.
+
+**Live-proven** with a safe, self-contained proof-of-concept (full
+script preserved in this session's scratchpad):
+1. A throwaway "victim" account signs up normally with a real phone
+   number (`+201099990001`).
+2. A second, unrelated HTTP session ("attacker") calls `signin` with
+   only that same phone number and an arbitrary name.
+3. The attacker receives a **valid credential pair for the victim's
+   real account** (same `api_key`, freshly re-issued `api_secret`) —
+   confirmed by comparing the returned `user.id` to the victim's.
+4. The attacker's `first_name` value silently overwrites the victim's
+   display name on the account (`signin`'s own update-if-different
+   logic), i.e. the attacker can also relabel the victim's identity.
+5. Using only the credentials just obtained (never having proven
+   phone ownership), the attacker successfully calls
+   `payments.get_my_wallet` and reads the victim's real wallet
+   balance — HTTP 200, real data.
+
+Test account deleted immediately after (`bench console`, verified
+gone). No real user's data was touched.
+
+**Downstream impact:** every other endpoint in the app trusts
+`frappe.session.user` derived from this token as the sole identity
+signal — which is architecturally correct (Phase 2's whole audit below
+confirms every mutation re-checks ownership server-side, never trusts
+a client-supplied id) — but that correctness is moot if the identity
+itself can be stolen for free. Concretely: `payments.transfer_balance`
+requires only "authenticated as this user," so an attacker with a
+stolen credential pair can drain that user's real wallet balance to
+any phone number in one call, with no additional check. Private chats,
+CVs, and any other private data are equally exposed.
+
+**Why this was not fixed automatically:** `app/signin.tsx`'s own
+header comment and `ACCESS_CONTROL.md` both document "no OTP, no
+password" as a **deliberate product decision made before any real
+backend existed** — a reasonable placeholder against purely local
+mock data. It is not reasonable against a live backend holding real
+money and real private data. A correct fix (real SMS OTP verification)
+requires choosing and configuring a third-party SMS provider with real
+credentials — exactly the same class of decision this codebase's own
+Payments section already declined to make unilaterally ("do NOT invent
+a payment provider integration... a distinct product decision
+requiring the requester's own provider choice and credentials"). The
+same principle applies here: this needs the product owner's explicit
+choice of SMS provider before it can be built, not an invented
+workaround. **Flagged as the single most important remaining action in
+this entire report — see §15.**
+
+## 4. Authorization / IDOR audit — every mutation endpoint re-checked
+
+Every `@frappe.whitelist()` function across all 24 `api/v1/*.py`
+modules was read in full this pass (not sampled) and checked for:
+explicit ownership/participant verification before any read of
+private data or any mutation, and whether `ignore_permissions=True`/
+`force=1` usage is preceded by a real check rather than being a bypass.
+
+**Result: every one is correctly guarded.** Confirmed by direct code
+reading, cross-referenced against each DocType's own permission JSON
+(a second, independent layer for several of them):
+
+- **Listings** (`listings.py`): `_assert_owner` before
+  update/delete/pause/activate/mark-sold; `get_seller_listings`/
+  `get_public_listings` scoped to `Active` only (no draft/rejected
+  leak); phone number gated by `_phone_visible_to_viewer` (owner, or a
+  real conversation participant — never a bare Guest/browsing user).
+- **Favorites** (`favorites.py`): every mutation scoped to
+  `owner: user`; `add_favorite` rejects non-public listings.
+- **Saved Searches** (`saved_searches.py`): `delete_saved_search`
+  checks `doc.owner != user` before delete.
+- **Chat** (`chat.py`): every read/write calls `_assert_participant`;
+  the other party's phone is only ever revealed inside
+  `_serialize_conversation_meta`, which is only reachable after that
+  check passes.
+- **Calls** (`calls.py`) + **LiveKit** (`get_rtc_token`): caller/callee
+  always derived from the conversation's own buyer/seller fields, never
+  client-supplied; every call-state mutation and `get_rtc_token`
+  itself checks `user in (doc.caller, doc.callee)` before doing
+  anything. Re-verified live this pass (§9).
+- **Reviews** (`reviews.py`): `submit_review` requires a real prior
+  conversation with the seller (`_has_relationship`) before allowing a
+  rating; `delete_review(seller_id)` deletes only the caller's own
+  `(owner, seller)` row, not an arbitrary review id.
+- **Jobs / Job Applications / Job Interviews / Saved Jobs /
+  Companies / Professional Profiles / Career Profile / Services**:
+  all re-verified this pass (in addition to the prior
+  "Jobs + Services Mobile Wiring" pass's live IDOR tests) — every
+  owner/employer/candidate boundary holds.
+- **Content Reports** (`content_reports.py`): `target_doctype`
+  constrained to an explicit allow-list (`VALID_TARGET_DOCTYPES`),
+  preventing arbitrary-DocType-existence probing via this endpoint.
+- **Notifications** (`notifications.py`): `mark_read`/
+  `remove_notification` both check `doc.owner != user` before acting
+  on an arbitrary `notification_id`.
+- **Payments** (`payments.py`): `approve_payment_request`/
+  `reject_payment_request`/`get_pending_payment_requests` all require
+  the `Souq Masr Admin` role (`_assert_admin`); `transfer_balance`
+  derives the debited amount from the caller's own live wallet balance
+  server-side, never from a client-supplied "current balance."
+
+**DocType-permission cross-check** (defense-in-depth, not the primary
+enforcement layer): `Souq Masr Wallet` grants `All+if_owner: read`
+only — **no write role exists at the DocType level at all**, meaning
+even a hand-crafted direct `/api/resource/Souq Masr Wallet/<id>` PUT
+request would be rejected by Frappe's own permission engine
+independent of `payments.py`'s Python checks. `Souq Masr Payment
+Request` grants `create` + `if_owner: read` only (no write/delete) —
+an owner cannot self-approve their own top-up even by calling the
+generic resource API directly. `Souq Masr Conversation`/`Message`/
+`Call` grant `create` only, by design (two-participant relationships
+can't be expressed by Frappe's single-owner `if_owner` primitive) —
+confirmed every whitelisted method in `chat.py`/`calls.py` performs
+its own explicit membership check, since there is no DocType-level
+backstop for these three.
+
+## 5. Privacy audit
+
+- Phone numbers: gated everywhere they appear (`listings.py`,
+  `chat.py`, `sellers.py`) behind "owner, or a real conversation
+  participant" — never exposed to a bare Guest or unrelated browsing
+  user.
+- Reviewer identity: `reviews.py` deliberately strips the raw Frappe
+  User docname (phone-derived) from every public response, returning
+  only a display name — documented specifically to prevent leaking a
+  reviewer's phone number via their `User.name`.
+- CVs/résumés: `career_profile.py`'s `Souq Masr Career Profile` grants
+  read to **no one but its owner** — not even employers; an employer
+  only ever sees what a candidate explicitly submitted with a specific
+  application (`job_applications.py`'s own snapshot fields). Both
+  `get_my_resume` and `get_application_resume` return file content as
+  base64 in the response body, never a guessable/public URL.
+- `get_applications_for_job`'s response was re-verified this pass to
+  never include a raw resume URL/field for any row — `has_resume: bool`
+  only.
+
+## 6. File/image security — 1 real gap found and fixed (P2)
+
+`listings.py`'s `_attach_images` and `career_profile.py`'s
+`resume_file_url` handling both verify `File.owner ==
+frappe.session.user` before attaching an uploaded file to a document —
+the established pattern in this codebase. Three other write paths were
+missing this exact check, accepting **any** `file_url` string with no
+ownership verification:
+
+- `companies.py`'s `create_or_update_my_company` (`logo`, `cover`)
+- `professional_profiles.py`'s `create_or_update_my_profile` (`photo`)
+- `services.py`'s `create_service`/`update_service` (`image_urls`)
+
+**Fixed** by adding the identical ownership check used elsewhere
+(`services.py` gained a new `_to_json_list_owned` helper mirroring
+`listings.py`'s `_attach_images`). **Deployed and live-verified**: an
+unowned or nonexistent `file_url` is now rejected with `403
+PermissionError` on all three paths (6/6 live tests), while omitting
+the field or using one's own uploaded file continues to work
+unchanged (explicit no-regression test included).
+
+Severity note: these files are all uploaded `is_private=0` (meant to
+be public once attached, same as listing photos), so this was never a
+*privacy* leak — the real risk was integrity/attribution (attaching
+someone else's already-public image as your own logo/photo/service
+image), which is why it's classified P2, not P0/P1.
+
+## 7. API security
+
+- HTTP method correctness: every state-mutating endpoint is `POST`;
+  every read that has no side effect is `GET`; the two calls with a
+  documented side effect on read (`calls.get_call`,
+  `calls.get_active_call_for_conversation` — lazy ring-timeout
+  resolution) are deliberately `POST`, with an explicit comment
+  explaining why (Frappe's `sync_database()` only auto-commits for
+  unsafe HTTP methods — a real bug class this codebase already found
+  and fixed in an earlier slice, re-confirmed still correct this pass).
+- Traceback/exception leakage: **re-verified live this pass** (not
+  just read from the older `BACKEND_PRODUCTION_READINESS.md` report) —
+  a malformed request to `listings.get_listing` (missing required
+  param) returns `{"exc_type":"TypeError"}` only, HTTP 500, no file
+  paths or stack trace. `System Settings.allow_error_traceback` is
+  still disabled.
+- Arbitrary-DocType access: `content_reports.report_content`
+  constrains `target_doctype` to an explicit allow-list — cannot be
+  used to probe existence of arbitrary DocTypes/records.
+- No endpoint found that trusts a client-supplied `owner`,
+  `balance`, `status`, or `is_approved`-shaped field for anything
+  security-relevant — every one of those is either ignored on input or
+  independently re-derived server-side.
+
+## 8. Database / Frappe permissions
+
+Every `ignore_permissions=True` and `force=1` call site across all 24
+`api/v1/*.py` files (44 occurrences) was re-read this pass and matched
+against its preceding ownership/participant check — see §4. No use of
+`frappe.db.sql` found doing raw string interpolation of user input
+(the one `frappe.db.sql` in `reviews.py`'s `_rating_summary` and the
+new one in `jobs.py`'s `get_hiring_companies` both use parameterized
+`%s`/`%(name)s` placeholders, not string formatting).
+
+## 9. Business-logic / LiveKit / money — live end-to-end verification
+
+**LiveKit**, re-verified live this pass end-to-end (not re-reading
+code alone): created a real listing → real conversation → real call
+between two real test accounts, then called `get_rtc_token` as the
+actual callee — received a genuine LiveKit JWT (`ws://187.7.19.136:7880`,
+correctly scoped to `room: CALL-#####`, `identity` set to the real
+participant). A third, non-participant test account calling
+`get_rtc_token` for the same `call_id` was correctly denied (`403`).
+Server-side `livekit_api_key`/`livekit_api_secret`/`livekit_ws_url`
+confirmed present in `site_config.json` (presence only checked, values
+never displayed). Test data cleaned up immediately after.
+
+**Conclusion: LiveKit's server-side implementation is genuinely
+functional, correctly authorized, and live-verified this pass — not
+just "code exists."** The *only* remaining gap, unchanged from before
+this pass and consistent with the existing NO-GO status, is that
+nobody has run a real two-physical-device audio call yet. That cannot
+be faked or substituted with an HTTP test — it stays
+**IMPLEMENTATION VERIFIED / PHYSICAL TEST REQUIRED**.
+
+**Wallet/money edge cases**, re-verified live this pass:
+- Negative amount → `create_topup_request(-500)` and
+  `transfer_balance(..., -100)` both rejected with
+  `ValidationError: "Amount must be a positive number"`.
+- No mid-request `frappe.db.commit()` found anywhere in `payments.py`
+  — `transfer_balance`'s debit-then-credit pair relies correctly on
+  Frappe's own request-boundary commit/rollback (confirmed no explicit
+  early commit exists that could make a partial transfer durable).
+- `_debit`/`_credit` go through `doc.save()` (not a raw SQL
+  increment), which preserves Frappe's own optimistic-locking
+  (`TimestampMismatchError` on a genuine concurrent write) — a raced
+  double-debit fails safe (rejected) rather than silently corrupting
+  the balance.
+
+## 10. Push notifications — NOT IMPLEMENTED (more precise than "untested")
+
+Repo-wide search for `expo-notifications` API usage
+(`getExpoPushTokenAsync`, `registerForPushNotifications`,
+`Notifications.*`) across every `.ts`/`.tsx` file: **zero call sites**.
+The `expo-notifications` Expo plugin is declared in `app.json` (icon
+color only) but no code anywhere requests permission, registers a
+device token, or sends one to the backend. Backend search for a device-
+token field/endpoint across every DocType and `api/v1/*.py` file:
+**none exists**. This is not "records exist but delivery is untested"
+— it is genuinely unbuilt on both sides. Correctly out of scope for
+this pass (explicitly listed as a known, deferred gap) — not built.
+
+## 11. Infrastructure
+
+- Domain/SSL: unchanged, still `http://187.7.19.136` only (no domain,
+  no TLS) — a known, already-disclosed limitation
+  (`BACKEND_PRODUCTION_READINESS.md` §12), re-confirmed this pass. This
+  now provably affects **three** subsystems over plain-text, not just
+  the REST API: the Frappe REST API itself, and (newly confirmed this
+  pass) the LiveKit signaling websocket (`ws://`, not `wss://`).
+- `app.json`'s `ios.infoPlist.NSAppTransportSecurity.NSAllowsArbitraryLoads:
+  true` and `android.usesCleartextTraffic: true` are both required by
+  the above (no HTTPS backend exists to point at yet) but are broader
+  than strictly necessary (a blanket allow-all rather than a
+  domain-scoped exception) — not changed this pass, because scoping it
+  to the current raw IP wouldn't add real security (that traffic is
+  still plaintext either way) and the real fix is getting HTTPS, not
+  narrowing the exception. Worth noting explicitly: `NSAllowsArbitraryLoads:
+  true` is also a common App Store review friction point and should be
+  revisited once a real domain/TLS cert exists.
+- `eas.json`'s `production` build profile declares no `env` block at
+  all (only `development` sets `EXPO_PUBLIC_API_BASE_URL`) — by
+  `config/env.ts`'s own explicit design, this means a production build
+  with no EAS-dashboard-level env override would ship with an empty
+  `API_BASE_URL` and honestly show "no backend connection" rather than
+  silently pointing at the dev IP or a fake success — confirmed this is
+  the intended fail-safe behavior, not an oversight, by reading
+  `config/env.ts`'s own inline documentation.
+- No secrets, API keys, tokens, or credentials found committed
+  anywhere in the repository or its git history (checked by filename
+  pattern — `.env`, `.pem`, `id_rsa`, `site_config.json` — and by
+  content pattern — `password=`, `api_secret=`, `BEGIN ... PRIVATE
+  KEY`). `.env` is correctly `.gitignore`d and was never committed.
+- `allow_error_traceback` confirmed still disabled (§7).
+
+## 12. Mobile production configuration
+
+- Credentials: `expo-secure-store` only, never `AsyncStorage` (§2/§3
+  of the earlier audit already established this; re-confirmed by
+  reading `lib/authCredentials.ts` in full this pass).
+- Camera: `android.blockedPermissions` explicitly blocks
+  `android.permission.CAMERA` at the manifest level, consistent with
+  the audio-only voice-calling design (`can_publish_sources:
+  ["microphone"]` only, server-enforced — confirmed in §9) — the app
+  genuinely cannot access the camera even if a compromised/modified
+  build tried to.
+- No hardcoded `localhost`/`127.0.0.1`/private-LAN IP found anywhere
+  in mobile source — the only backend URL is the env-var-driven
+  `API_BASE_URL` (§11).
+- No source-map or debug-logging leakage risk beyond what §2/§11
+  already cover (`lib/devLog.ts` is a real production no-op).
+
+## 13. Testing — what was actually run this pass
+
+- `npx tsc --noEmit -p tsconfig.json` — 0 errors (re-run after the P2
+  backend fixes; no mobile files were changed this pass).
+- `npx expo export --platform ios` — succeeded, clean bundle.
+- `regression_check.py` — 6/6 (Listings/Taxonomy/Favorites/Chat,
+  authenticated + guest-denied) — re-run after the P2 fixes.
+- `live_test_p2b.py` (the Jobs+Services suite from the prior pass) —
+  47/47 — re-run after the P2 fixes to confirm no regression from
+  touching `companies.py`/`professional_profiles.py`/`services.py`.
+- New this pass, all live against `187.7.19.136`, all cleaned up
+  afterward: the auth.py account-takeover proof-of-concept (§3), the
+  file-ownership-fix verification (§6, 6/6), the LiveKit end-to-end
+  token-issuance test (§9), the traceback-leak and negative-amount
+  edge-case checks (§7/§9).
+- Physical-device tests (LiveKit two-device audio, push notification
+  delivery): **not performed, not fabricated** — this environment has
+  no physical devices. Both remain explicitly marked as such rather
+  than assumed working.
+
+## 14. Decision
+
+# GO WITH ONE EXPLICIT CRITICAL BLOCKER
+
+Everything audited this pass that was already marked GO in prior
+phases remains genuinely GO — re-verified live, not re-approved from
+memory. Three real (if minor) security inconsistencies were found and
+fixed, deployed, and live-tested with no regression. **One critical
+finding (§3) is not fixed and must not be treated as acceptable for
+real end users**: `auth.signin`'s lack of phone-ownership verification
+allows full account takeover (including real wallet funds) by anyone
+who knows a user's phone number. This is a product/vendor decision
+(which SMS OTP provider to use) that only the project owner can make —
+see the final report's §15 for the recommended next step.
