@@ -166,6 +166,62 @@ def get_location_children(parent: str):
 
 
 @frappe.whitelist(allow_guest=True)
+def get_location(location_key: str):
+	"""Single-location lookup by id — mirrors get_category() exactly (same
+	404 pattern: frappe.throw(..., frappe.DoesNotExistError) for an unknown
+	id, no manual status-code handling needed, and no traceback leaks to
+	Guest since allow_error_traceback is disabled at the System Settings
+	level — see BACKEND_PRODUCTION_READINESS.md §9 Bug 4).
+
+	Added for Phase 2A's LocationPicker migration — mock/taxonomy/locations.ts's
+	getLocation(id) had no server-side equivalent until now (see
+	MOBILE_BACKEND_GAPS.md #1). Same response shape as search_locations()'s
+	items (id/name/location_type/parent_id), not a new shape, so the mobile
+	adapter (services/taxonomyService.ts's adaptLocationSearchResult) is
+	reused as-is."""
+	if not frappe.db.exists("Souq Masr Location", location_key):
+		frappe.throw(frappe._("Location not found"), frappe.DoesNotExistError)
+
+	doc = frappe.get_doc("Souq Masr Location", location_key)
+	return {
+		"id": doc.location_key,
+		"name": doc.location_name,
+		"location_type": doc.location_type,
+		"parent_id": doc.parent_souq_masr_location or None,
+	}
+
+
+@frappe.whitelist(allow_guest=True)
+def get_location_path(location_key: str):
+	"""Breadcrumb from the root governorate down to this location — mirrors
+	get_path()'s walk-up-the-tree shape exactly ([{id,name}, ...], root
+	first). Added for Phase 2A's LocationPicker migration (mock's
+	locationPathLabel() had no server-side equivalent — MOBILE_BACKEND_GAPS.md #2).
+
+	Unlike get_path() (which silently returns whatever it accumulated if the
+	starting id doesn't exist, since categories never call it with an
+	unverified id), this one validates the requested location_key up front
+	and raises a clean 404 for an invalid id — the mobile app can call this
+	directly with a user-supplied/persisted id it hasn't already verified
+	exists (LocationPicker resuming a stored onboarding.locationId), so the
+	explicit check matters here in a way it didn't for get_path()."""
+	if not frappe.db.exists("Souq Masr Location", location_key):
+		frappe.throw(frappe._("Location not found"), frappe.DoesNotExistError)
+
+	path = []
+	current = location_key
+	while current:
+		if not frappe.db.exists("Souq Masr Location", current):
+			break
+		row = frappe.db.get_value(
+			"Souq Masr Location", current, ["location_key", "location_name", "parent_souq_masr_location"], as_dict=True
+		)
+		path.insert(0, {"id": row.location_key, "name": row.location_name})
+		current = row.parent_souq_masr_location
+	return path
+
+
+@frappe.whitelist(allow_guest=True)
 def search_locations(q: str, limit=30):
 	"""mirrors searchLocations() — search across governorate/city/area together,
 	not scoped to whichever level happens to be on screen (the mobile app's
