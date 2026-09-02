@@ -17,6 +17,8 @@
 import frappe
 from frappe.utils import cint, now_datetime
 
+from souq_masr.api.v1 import notifications
+
 PAGE_SIZE_DEFAULT = 50
 
 
@@ -182,6 +184,10 @@ def send_message(conversation_id, text):
 	doc.text = text
 	doc.insert()
 	_touch_last_message(conv, text)
+	notifications.notify(
+		_other_party(conv, user), "message_received", "رسالة جديدة",
+		text[:120], reference_type="conversation", reference_id=conversation_id,
+	)
 	return _serialize_message(doc)
 
 
@@ -205,6 +211,10 @@ def send_image_message(conversation_id, image_url):
 	doc.image = image_url
 	doc.insert()
 	_touch_last_message(conv, "📷 صورة")
+	notifications.notify(
+		_other_party(conv, user), "message_received", "رسالة جديدة",
+		"📷 صورة", reference_type="conversation", reference_id=conversation_id,
+	)
 	return _serialize_message(doc)
 
 

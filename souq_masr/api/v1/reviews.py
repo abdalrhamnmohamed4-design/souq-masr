@@ -44,6 +44,8 @@
 import frappe
 from frappe.utils import cint
 
+from souq_masr.api.v1 import notifications
+
 PAGE_SIZE_DEFAULT = 20
 
 
@@ -130,6 +132,9 @@ def submit_review(seller_id, rating, comment=None):
 		doc.rating = rating
 		doc.comment = (comment or "").strip()
 		doc.insert()
+		# إشعار على أول تقييم بس — مش على كل تعديل لاحق، عشان منكررش
+		# إزعاج البائع كل ما المُقيِّم يغيّر رأيه.
+		notifications.notify(seller_id, "review_received", "تقييم جديد", f"حد قيّمك {rating} نجوم.")
 
 	return _serialize_review(doc, user)
 

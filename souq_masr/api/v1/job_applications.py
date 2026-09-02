@@ -25,6 +25,8 @@ import frappe
 from frappe.utils import cint
 from frappe.utils.file_manager import get_file
 
+from souq_masr.api.v1 import notifications
+
 PAGE_SIZE_DEFAULT = 20
 
 
@@ -106,6 +108,7 @@ def apply_to_job(job_id, full_name, phone, email=None, resume_file_url=None, cov
 	doc.insert()
 
 	frappe.db.set_value("Souq Masr Job", job_id, "applications_count", cint(job.applications_count or 0) + 1, update_modified=False)
+	notifications.notify(job.owner, "job_application_received", "متقدّم جديد", f'حد قدّم على وظيفة "{job.title}".', reference_type="job", reference_id=job_id)
 	return _serialize(doc, user)
 
 
@@ -174,6 +177,11 @@ def set_application_status(application_id, status):
 		frappe.throw(frappe._("Invalid status"), frappe.ValidationError)
 	doc.status = status
 	doc.save(ignore_permissions=True)
+	job_title = frappe.db.get_value("Souq Masr Job", doc.job, "title")
+	notifications.notify(
+		doc.owner, "job_application_status_changed", "تحديث على طلبك",
+		f'حالة طلبك على وظيفة "{job_title}" اتغيّرت.', reference_type="application", reference_id=doc.name,
+	)
 	return _serialize(doc, user)
 
 

@@ -6,6 +6,8 @@
 
 import frappe
 
+from souq_masr.api.v1 import notifications
+
 
 def _current_user():
 	user = frappe.session.user
@@ -58,6 +60,11 @@ def schedule_interview(application_id, date, time, mode="in_person", location=No
 
 	application.status = "interview"
 	application.save(ignore_permissions=True)
+	job_title = frappe.db.get_value("Souq Masr Job", application.job, "title")
+	notifications.notify(
+		application.owner, "job_application_status_changed", "دعوة لمقابلة",
+		f'اتحددتلك مقابلة بخصوص وظيفة "{job_title}".', reference_type="application", reference_id=application.name,
+	)
 	return _serialize(doc)
 
 
