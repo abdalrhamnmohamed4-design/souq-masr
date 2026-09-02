@@ -1,6 +1,36 @@
 # Copyright (c) 2026, Souq Masr and contributors
 # For license information, please see license.txt
 #
+# ############################################################
+# SECURITY — P0, OPEN, BLOCKS REAL PRODUCTION USE
+# ############################################################
+# signin() below performs NO verification that the caller actually owns
+# the phone number they pass. It is a find-or-create: if a User with
+# that mobile_no already exists, this re-issues a FRESH, VALID
+# api_key/api_secret pair for that existing account and returns it to
+# whoever asked. There is no OTP, no password, no proof of possession.
+#
+# Consequence, live-proven with a self-contained proof-of-concept
+# (see MOBILE_BACKEND_INTEGRATION_REPORT.md's "Master Production
+# Readiness + Hardening Pass" §3): anyone who knows an existing user's
+# phone number can obtain full credentials for that user's real
+# account, then read their private chats, act as them anywhere, and —
+# because payments.transfer_balance requires nothing beyond "you are
+# authenticated as this user" — drain their real wallet balance.
+#
+# This was a DELIBERATE product decision from before a real backend
+# existed (see app/signin.tsx's own header comment and ACCESS_CONTROL.md)
+# — reasonable against local mock data, NOT acceptable against a live
+# backend holding real money and real private data.
+#
+# Fixing it correctly requires real SMS OTP verification, which needs a
+# third-party SMS provider chosen and paid for by the product owner —
+# the same class of decision this codebase already, correctly, declined
+# to make unilaterally for payment gateways. DO NOT paper over this
+# with a client-side check, a shared secret, or a self-invented
+# challenge scheme: none of those are real phone-ownership proof.
+# ############################################################
+#
 # Minimum real authentication foundation for Phase 2B — built ONLY because
 # real server-side listing ownership requires it (see
 # MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B "Ownership / Authentication"

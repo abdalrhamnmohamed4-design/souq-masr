@@ -56,9 +56,20 @@ def create_or_update_my_company(name, description, industry=None, size=None, cit
 	doc.phone = phone
 	doc.email = email
 	doc.working_hours = working_hours
+	# نفس فحص career_profile.py's resume_file_url/chat.py's send_image_message
+	# بالظبط — من غيره، أي مستخدم كان يقدر يمرّر file_url ملف حد تاني رفعه
+	# (حتى لو عام) كـlogo/cover بتاعه هو، من غير أي تحقق ملكية.
 	if logo is not None:
+		if logo:
+			file_row = frappe.db.get_value("File", {"file_url": logo}, "owner")
+			if not file_row or file_row != user:
+				frappe.throw(frappe._("You can only attach a file you uploaded yourself"), frappe.PermissionError)
 		doc.logo = logo
 	if cover is not None:
+		if cover:
+			file_row = frappe.db.get_value("File", {"file_url": cover}, "owner")
+			if not file_row or file_row != user:
+				frappe.throw(frappe._("You can only attach a file you uploaded yourself"), frappe.PermissionError)
 		doc.cover = cover
 	if existing:
 		doc.save(ignore_permissions=True)
