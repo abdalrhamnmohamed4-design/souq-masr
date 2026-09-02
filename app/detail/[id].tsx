@@ -5,7 +5,7 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Image, Pressable, Share, ScrollView, Text, View, useWindowDimensions } from 'react-native';
+import { Alert, Image, Linking, Pressable, Share, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
@@ -28,6 +28,9 @@ import {
   isRealListingId,
 } from '@/services/listingService';
 import { hasReported as hasReportedReal, reportListing as reportListingReal } from '@/services/reportService';
+import { startConversation } from '@/services/chatService';
+import { startCall } from '@/services/callService';
+import { CallChoiceSheet } from '@/components/CallChoiceSheet';
 import { useAppStore, useListingById, useSeller, type ReportReason } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -57,6 +60,9 @@ export default function Detail() {
   const { width: screenWidth } = useWindowDimensions();
   const [galleryIndex, setGalleryIndex] = React.useState(0);
   const [selectedVariant, setSelectedVariant] = React.useState<ProductVariant | undefined>(undefined);
+  const [startingChat, setStartingChat] = React.useState(false);
+  const [callSheetOpen, setCallSheetOpen] = React.useState(false);
+  const [startingCall, setStartingCall] = React.useState(false);
 
   // Phase 2B: id بتاع LST-##### معناه إعلان حقيقي من الباك إند (نشر
   // فعلي من app/post/index.tsx's create_listing) — بديل بحث محلي في
@@ -121,11 +127,70 @@ export default function Detail() {
   const brand = listing.brandId ? getBrand(listing.brandId) : undefined;
   const model = listing.modelId ? getModel(listing.modelId) : undefined;
 
+  // Phase 2B Slice 4: إعلان حقيقي → محادثة حقيقية فعلية على الباك إند
+  // (souq_masr.api.v1.chat.start_conversation، idempotent — نفس المشتري+
+  // البائع+الإعلان بيرجّع نفس CONV-##### القديمة مش يعمل واحدة جديدة).
+  // إعلان mock لسه بيستخدم startChatForListing المحلي زي ما كان بالظبط.
   const openChat = () =>
     requireAuth(() => {
+      if (isReal) {
+        if (startingChat) return;
+        setStartingChat(true);
+        startConversation(listing.id).then((r) => {
+          setStartingChat(false);
+          if (r.status === 'success') {
+            router.push(`/chat/${r.data.id}`);
+          } else {
+            Alert.alert('تعذّر بدء المحادثة', 'حصلت مشكلة، جرّب تاني.');
+          }
+        });
+        return;
+      }
       const chatId = startChatForListing(listing.id, listing.sellerId);
       router.push(`/chat/${chatId}`);
     });
+
+  // القسم 3: زرار الاتصال بيفتح شيت اختيار، مش اتصال فوري. المكالمة
+  // المجانية داخل التطبيق لازم محادثة حقيقية موجودة (Souq Masr Call's
+  // conversation field مطلوب — caller/callee بيتحسبوا من عضويتها) —
+  // فبنضمن وجودها الأول (idempotent، نفس اللي بيحصل من زرار "راسل
+  // البائع") قبل ما نبدأ المكالمة.
+  const openFreeCall = () => {
+    if (!isReal) {
+      setCallSheetOpen(false);
+      Alert.alert('مش متاح للإعلان ده', 'المكالمات المجانية داخل التطبيق متاحة بس للإعلانات الحقيقية المنشورة على الباك إند.');
+      return;
+    }
+    requireAuth(() => {
+      if (startingCall) return;
+      setStartingCall(true);
+      startConversation(listing.id).then(async (convResult) => {
+        if (convResult.status !== 'success') {
+          setStartingCall(false);
+          setCallSheetOpen(false);
+          Alert.alert('تعذّر بدء المكالمة', 'حصلت مشكلة، جرّب تاني.');
+          return;
+        }
+        const callResult = await startCall(convResult.data.id);
+        setStartingCall(false);
+        setCallSheetOpen(false);
+        if (callResult.status !== 'success') {
+          Alert.alert('تعذّر بدء المكالمة', 'حصلت مشكلة، جرّب تاني.');
+          return;
+        }
+        router.push(`/call/${callResult.data.id}`);
+      });
+    });
+  };
+
+  const openRegularCall = () => {
+    setCallSheetOpen(false);
+    if (!seller.phone) {
+      Alert.alert('رقم الهاتف غير متاح', 'مفيش رقم هاتف متاح للتواصل مع البائع ده دلوقتي.');
+      return;
+    }
+    Linking.openURL(`tel:${seller.phone}`);
+  };
 
   const shareListing = () => {
     Share.share({ message: `${listing.title} — ${price.text}\nعلى سوق مصر` });
@@ -391,12 +456,20 @@ export default function Detail() {
           </Button>
         </View>
         <Pressable
-          onPress={() => router.push(`/call/${seller.id}`)}
+          onPress={() => setCallSheetOpen(true)}
           style={{ width: 52, height: 52, borderRadius: radius.r2, backgroundColor: colors.paper, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' }}
         >
           <Icon name="phone" color={colors.ink} />
         </Pressable>
       </View>
+
+      <CallChoiceSheet
+        visible={callSheetOpen}
+        onClose={() => setCallSheetOpen(false)}
+        onFreeCall={openFreeCall}
+        onRegularCall={openRegularCall}
+        starting={startingCall}
+      />
     </View>
   );
 }

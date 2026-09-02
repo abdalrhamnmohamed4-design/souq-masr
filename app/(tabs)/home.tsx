@@ -31,6 +31,7 @@ import { categoryLabel } from '@/mock/taxonomy/categories';
 import type { Listing } from '@/mock/listings';
 import { getBrandsForCategory, getCategory, getChildren, getLocationPath } from '@/services/taxonomyService';
 import { getListingsByCategory, getListingsByLocation, searchListings } from '@/services/listingService';
+import { getMyConversations } from '@/services/chatService';
 import { useAppStore } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
 import { useAllJobs, useAllServices } from '@/store/useJobsStore';
@@ -64,7 +65,27 @@ export default function Home() {
   const toggleFav = useAppStore((s) => s.toggleFavorite);
   const requireAuth = useRequireAuth();
   const city = useAppStore((s) => s.onboarding.city);
-  const unreadCount = useAppStore((s) => s.conversations.reduce((sum, c) => sum + c.unread, 0));
+  const mockUnreadCount = useAppStore((s) => s.conversations.reduce((sum, c) => sum + c.unread, 0));
+  // Phase 2B Slice 4: المحادثات الحقيقية (CONV-#####) لها unread count
+  // خاص بيها من الباك إند (get_my_conversations) — بنجمعه مع العداد
+  // المحلي عشان شارة الرسائل تعكس الاتنين، مش تسيب الحقيقية بره الحساب.
+  const [realUnreadCount, setRealUnreadCount] = useState(0);
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const r = await getMyConversations();
+      if (!cancelled && r.status === 'success') {
+        setRealUnreadCount(r.data.reduce((sum, c) => sum + (c.unread ?? 0), 0));
+      }
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+  const unreadCount = mockUnreadCount + realUnreadCount;
   const unreadNotifications = useAppStore((s) => s.notifications.filter((n) => !n.isRead).length);
   const setOnboarding = useAppStore((s) => s.setOnboarding);
   const onboardingLocationId = useAppStore((s) => s.onboarding.locationId);

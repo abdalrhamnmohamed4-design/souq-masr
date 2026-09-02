@@ -27,7 +27,7 @@ const NS = 'souq_masr.api.v1.listings';
 
 // ============================================================ أشكال رد Frappe الخام
 
-type RawSeller = { id: string; name: string; phone: string; member_since: string; ads_count: number };
+type RawSeller = { id: string; name: string; phone: string | null; member_since: string; ads_count: number };
 
 type RawListing = {
   id: string;
@@ -121,7 +121,12 @@ function adaptSeller(raw: RawSeller): Seller {
     adsCount: raw.ads_count,
     rating: 0, // مفيش نظام تقييمات حقيقي متصل لسه (Phase 2D، خارج نطاق الشريحة دي)
     responseRate: 0,
-    phone: raw.phone,
+    // القسم 6 من طلب Phase 2B Slice 4: الباك إند (listings.py's
+    // _phone_visible_to_viewer) هو اللي يقرر لو الرقم يبان أصلًا —
+    // null معناها "مش متاح للمشاهد ده"، مش قيمة ناقصة بالغلط. بنحوّله
+    // لـ'' عشان يفضل متوافق مع Seller.phone: string (البائعين المحليين
+    // دايمًا عندهم رقم)، وكل استهلاك للحقل ده بيتعامل مع '' كـ"مفيش رقم".
+    phone: raw.phone ?? '',
   };
 }
 

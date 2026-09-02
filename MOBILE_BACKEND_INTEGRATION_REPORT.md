@@ -1875,3 +1875,426 @@ mobile wire format.
 Phase 2A/Slice 1/Slice 2 regression. No mock data deleted globally —
 `favorites`/`savedSearches`/`reports` remain in `store/useAppStore.ts`,
 `favorites` still actively backing Services.
+
+---
+
+# Phase 2B Slice 4 — Real Chat + Timestamped History + Call Signaling + Phone Fallback
+
+**Scope of this section, exactly:** real conversations with server-timestamped
+message history and date-grouped display; a real call data model with
+server-derived participants, full state machine, security, and a
+persisted call-history/timeline; native-dialer phone fallback gated by a
+real, backend-authoritative privacy rule. **Not in scope: actual
+real-time voice audio.** No WebRTC/RTC-provider SDK is integrated this
+slice — see §7 for why, and the documented architecture recommendation
+for the follow-up slice that would add it. This split was confirmed with
+the requester up front (via an explicit question) before any code was
+written, given this environment cannot run a mobile app on a real device
+or emulator to test live audio.
+
+## 1. Audit performed before writing any code
+
+Read in full: `mock/messages.ts` (`ChatBubble`/`Conversation` — `time` is
+pre-formatted display text, no raw timestamp field exists at all),
+`store/useAppStore.ts`'s `sendMessage`/`sendImageMessage`/
+`startChatForListing`/`addSystemMessage` (100% local, `Date.now()`-based
+ids, device-clock-formatted times), `app/chat/[id].tsx` (revealed an
+already-existing call button, an already-existing native-dialer button
+with `Linking.openURL`, `seller.phone` shown in plain text
+unconditionally with no privacy gate — a real pre-existing leak, fixed in
+§6 — and an honest "voice recording not available yet" placeholder on the
+mic button), `app/call/[id].tsx` (revealed this was entirely a fake-timer
+simulation — a two-second timeout that flipped to "connected" plus a
+duration ticker, mute/speaker/keypad controls that toggled nothing real —
+exactly the anti-pattern this slice's request forbids building),
+`app/(tabs)/messages.tsx` (conversation list, local array, local search).
+
+Also checked every other consumer of chat state: `app/(tabs)/home.tsx`'s
+unread badge (now includes real conversations too, see §9), `app/analytics.tsx`
+(seller dashboard chat-count stats — untouched, mock-only, disclosed in
+§11), `app/seller/[id].tsx` (`startChatForListing` from a seller profile —
+untouched; seller profiles for real users don't exist yet, a pre-existing
+disclosed gap unrelated to chat).
+
+Frappe's realtime/socketio (`frappe-bench-node-socketio`) was confirmed
+running on the VPS but not wired up this slice — polling (2.5-5s, varies
+by screen) is used instead for chat/call live updates, as a deliberate
+scope reduction. Documented as a disclosed limitation/upgrade path, not a
+silent gap.
+
+## 2. New DocTypes
+
+| DocType | Autoname | Key fields | Permissions |
+|---|---|---|---|
+| `Souq Masr Conversation` | `format:CONV-{#####}` | `buyer`/`seller` (Link User), `listing` (Link), `last_message_at`, `last_message_preview` | Admin full; `All`: `create=1` only — no read/write/delete for any non-admin role |
+| `Souq Masr Message` | `format:MSG-{#####}` | `conversation` (Link, reqd), `kind` (Text/System/CallEvent), `text`, `image` (Attach Image), `call` (Link), `is_read` | Same shape as above |
+| `Souq Masr Call` | `format:CALL-{#####}` | `conversation` (Link, reqd), `caller`/`callee` (Link User, reqd), `listing` (denormalized), `call_type` ("voice"), `status` (Ringing/Active/Ended/Declined/Missed/Cancelled/Failed), `started_at`/`answered_at`/`ended_at`, `duration` | Same shape as above |
+
+**Why create-only, no blanket read/write:** unlike `Souq Masr Listing`/
+`Favorite`/`SavedSearch` (one owner each, `if_owner` works fine), a
+conversation and a call have two participants. Frappe's `if_owner`
+primitive can't express "either of these two users" on its own. All
+read/write access is instead enforced exclusively by explicit Python
+membership checks in every whitelisted method (`_assert_participant`/
+caller-or-callee checks), using `ignore_permissions=True` on the actual
+DB write only after that check passes — defense in depth via real code,
+not a decorative permission row.
+
+`caller`/`callee` on Call and `buyer`/`seller` on Conversation are always
+derived server-side from conversation membership — never accepted as
+client input. This is the entire mechanism behind §7's requirement (a
+user must not reach an arbitrary third party by manipulating IDs): the
+only path to reach anyone at all is through a conversation you are
+already a real participant of.
+
+## 3. Backend endpoints
+
+`souq_masr/api/v1/chat.py` — `start_conversation(listing_id)` (derives
+seller from `listing.owner`, idempotent find-or-create on the
+buyer+seller+listing triple), `get_my_conversations()` (or-filtered
+buyer=user OR seller=user, per-conversation unread count),
+`get_conversation(conversation_id, page, limit)` (paginated, newest-first
+fetched then reversed to chronological order for display),
+`send_message`, `send_image_message` (validates the uploaded
+`File.owner == user`, same ownership pattern as `listings.py`'s image
+attach), `mark_read` (bulk `frappe.db.set_value`).
+
+`souq_masr/api/v1/calls.py` — `start_call(conversation_id)` (blocks
+starting a second call while one is Ringing/Active on the same
+conversation), `accept_call`/`decline_call` (callee-only, Ringing-only),
+`end_call` (Active→Ended with a computed `duration`, or Ringing→Cancelled
+if the caller hangs up before anyone answers; idempotent no-op on an
+already-terminal call), `get_call`/`get_active_call_for_conversation`
+(must be called via POST — see §4).
+
+Every completed/declined/missed/cancelled call transition appends a
+`kind='CallEvent'` `Souq Masr Message` to the conversation's timeline
+(e.g. a call-duration line, "مكالمة مرفوضة", "مكالمة ملغاة", "مكالمة
+فائتة") — these persist exactly like any other message and survive app
+restart, because they're just rows in `Souq Masr Message` fetched the
+same way as text messages.
+
+Ring-timeout ("missed call") is resolved lazily on read
+(`_resolve_stale_ringing`, 45s `RING_TIMEOUT_SECONDS`) rather than by a
+cron/scheduler job — simpler, and live-verified correct with a real
+46-second sleep in the test script, not simulated.
+
+## 4. Critical bug found and fixed — GET requests silently roll back DB writes
+
+The 46-second missed-call timeout test showed `get_call` returning
+`status: "Missed"` in its JSON response, but a direct database check via
+bench console showed the call was still `"Ringing"` in the actual table,
+and zero `CallEvent` messages existed. Root cause, confirmed by reading
+Frappe's own request-handling code: a database write made while handling
+a GET-routed whitelisted method is rolled back at the end of the request
+by Frappe's `sync_database()`, because GET is not one of the "unsafe"
+HTTP methods it auto-commits for — even though the response body for that
+same request correctly reflected the (uncommitted) new state. A genuine,
+previously-latent framework gotcha that this slice's lazy-mutation-during-read
+design (`_resolve_stale_ringing`) exposed for the first time in this
+codebase.
+
+**Fix:** `get_call` and `get_active_call_for_conversation` are now called
+via POST only — both from the test scripts and from
+`services/callService.ts`. Documented in the function docstrings in
+`calls.py`, in `_resolve_stale_ringing`'s own docstring, and in
+`services/callService.ts`'s module comment, so this doesn't get silently
+reintroduced by a future "this is just a GET, right?" edit.
+
+## 5. Critical bug found and fixed — site-wide timezone misconfiguration
+
+The test script's own timestamp assertion failed by roughly 5.5 hours
+against a UTC reference. Investigation via bench console showed
+`System Settings.time_zone` was empty, and Frappe's timezone helper fell
+back to `Asia/Kolkata` (India, UTC+5:30) — meaning every `now_datetime()`/
+`creation` timestamp on the entire site, for every DocType, since the VPS
+was first deployed, has been recorded in Indian time, not Egyptian time.
+This predates this slice but was only caught now because this is the
+first slice with an explicit exact-timestamp-correctness requirement.
+
+**Fix:** the System Settings time zone was set to `Africa/Cairo`,
+followed by a web+worker restart. Re-verified `now_datetime()` now
+returns correct Cairo-local time (UTC+3, correct for Egypt's
+currently-active September DST). Historical rows already written under
+the old timezone are not backfilled — out of scope for a one-time data
+migration inside a chat feature slice — flagged here explicitly rather
+than left undiscovered.
+
+## 6. Critical bug found and fixed — phone number leaked to every viewer
+
+Re-reading `listings.py` while implementing this slice's phone-privacy
+requirement surfaced a real, pre-existing leak from Slice 1:
+`_seller_public_info()` unconditionally returned the seller's mobile
+number to every viewer of `get_listing`, including unauthenticated
+Guests. Never caught before because no phone-privacy requirement existed
+until this slice.
+
+**Fix:** new `_phone_visible_to_viewer(seller, listing_id)` helper —
+visible to (a) the listing owner viewing their own listing, or (b) a
+viewer who has a real `Souq Masr Conversation` with that seller about
+that specific listing; `False` for a Guest or an unrelated stranger.
+`_seller_public_info` updated to accept and use it. Backend-authoritative
+— the mobile app never decides this on its own. Live-tested with 5
+scenarios (guest / authenticated stranger / owner / buyer with a real
+conversation / stranger still blocked even after that conversation
+exists) — all passed, see §8.
+
+The same rule governs the phone surfaced inside a real conversation
+itself (`chat.py`'s `_serialize_conversation_meta`): once two users are
+proven conversation participants, showing each other's phone is the
+intended outcome of rule (b) above, not a separate leak.
+
+A related, smaller bug was also caught and fixed before deploy:
+`chat.py`'s `_user_display()` returned a dict keyed inconsistently
+between its found/not-found branches — one used `"phone"`, the other
+`"mobile_no"` — which would only surface as a lookup error in the rare
+case of a conversation participant whose User record no longer exists.
+Fixed to use the same key in both branches, redeployed, and reverified
+via the full smoke suite (§8).
+
+## 7. VoIP audio — not built this slice, architecture recommendation
+
+**What's real:** the full call data model — who called whom, when,
+current state, duration, security, and timeline persistence. **What's
+not:** any actual audio stream. `app/call/[id].tsx` shows an explicit,
+always-visible on-screen disclosure to this effect; it was never hidden
+or implied otherwise.
+
+**Why not built now:** this environment cannot run the mobile app at all
+— no simulator with working audio, no physical device, and Expo Go
+cannot load native WebRTC modules regardless. Any SDK integration
+attempted here would be untestable by construction, which is exactly the
+scenario the original request says to avoid faking. This was surfaced to
+the requester directly before writing any call-related code, and the
+confirmed scope was: real chat/call data model now, VoIP audio as a
+documented recommendation for a future slice, provider chosen by this
+pass.
+
+**Recommendation: LiveKit (self-hosted), not a managed usage-billed vendor.**
+
+| Option | Why not chosen |
+|---|---|
+| Twilio Voice | PSTN-oriented pricing/complexity aimed at telephony bridging this app doesn't need; per-minute billing that scales with usage the app can't yet predict; regional business-verification overhead. |
+| Agora | Strong mobile audio quality/SDKs, but fully proprietary usage-based billing and a vendor-hosted dashboard/credential system that sits awkwardly next to an otherwise self-hosted Frappe stack. |
+| Daily.co | Good developer experience, but cloud-only/proprietary with pricing that grows with call volume — same objection as Agora for a cost-sensitive, pre-revenue classifieds app. |
+| LiveKit | Open-source, self-hostable (one more service beside the existing Frappe VPS, or a small dedicated box) — infra cost only, no per-minute vendor billing. Official React Native SDK with an Expo config plugin. Server-side token minting is simple and fits the existing pattern of short-lived, server-issued credentials exactly. |
+
+**Integration shape for the follow-up slice** (not built, specified for
+handoff): a new endpoint on `calls.py`, reusing the exact same
+"is this user caller-or-callee on this specific call" check already
+written there, mints a short-lived (roughly 5 minutes, refreshable)
+LiveKit access token scoped to a room named after the call
+(`CALL-#####`). The LiveKit API key/secret would live only on the server
+(environment variable, never shipped to the app, same handling as any
+other backend secret); the mobile app would receive only the token.
+Actual audio media never flows through Frappe — Frappe's role stays
+"identity + call metadata" exactly as it is today, LiveKit's role is
+transport only. This requires moving the mobile app off Expo Go onto an
+EAS dev-client/custom build (a native module), a larger, separate
+undertaking outside this slice's scope.
+
+**Background/incoming calls — also not built, same reasoning:** true
+incoming-call support (ringing while the app is closed or backgrounded)
+needs CallKit (iOS) / ConnectionService (Android) native integration plus
+a VoIP push channel (APNs VoIP push + FCM), which in turn needs a paid
+Apple Developer entitlement and a push-notification service wired to
+Frappe that does not exist yet. What is built: foreground-only
+incoming-call detection via polling `get_active_call_for_conversation`
+while the chat screen is open — this slice implements the foreground case
+only, and says so rather than presenting it as full background support.
+
+## 8. Live HTTP testing performed
+
+Three-user test suite (buyer/seller/stranger): real timestamps verified
+against actual Africa/Cairo local time (not naive UTC), `start_conversation`
+idempotency, stranger blocked with a real 403 on both chat and call
+endpoints, `get_my_conversations` unread counts, `mark_read`, invalid-id
+404s, the full call state machine including a genuine 46-second sleep
+proving the ring-timeout → Missed transition with no auto-answer,
+cross-user 403s on accept/decline/end (caller cannot accept their own
+call; a non-participant cannot touch the call at all), declined/cancelled
+flows, and call-event timeline messages appearing correctly. All passed,
+across two bug-fix iterations (the GET/commit bug in §4 and the timezone
+bug in §5).
+
+Phone-privacy suite (5 scenarios: guest / authenticated stranger / owner
+/ buyer-with-real-conversation / stranger-still-blocked-after-that-conversation-exists)
+— all passed.
+
+Post-fix smoke suite (run after the `chat.py` `_user_display` fix in §6
+and after the mobile-side wiring in §9): fresh listing → real
+conversation → message with a real timestamp → seller reads it with the
+buyer's name/phone correctly visible → real call Ringing → Active →
+Ended with a real ~2s duration → call-event message correctly persisted
+in the timeline. All passed against the live VPS after the redeploy and
+restart:
+
+```
+listing created: LST-00067
+conversation: CONV-00068, other_party={'id': '201099990002@phone.souqmasr.local', 'name': 'Smoke Seller', 'phone': '+201099990002'}
+message sent: MSG-00069 at 2026-09-02 16:49:31.166428
+seller sees other_party={'id': '201099990001@phone.souqmasr.local', 'name': 'Smoke Buyer', 'phone': '+201099990001'}
+buyer's conversations: 1
+call started: CALL-00070, status=Ringing
+call accepted -> Active
+call ended, duration=2s
+call-event timeline messages: ['مكالمة صوتية — المدة: 00:02']
+
+SMOKE TEST PASSED
+```
+
+Test data cleaned up via bench-console `frappe.delete_doc(force=1, ignore_permissions=True)` calls after each round.
+
+## 9. Mobile changes
+
+`services/chatService.ts` and `services/callService.ts` (new) — same
+`ApiResult<T>`/adapter pattern as every prior service; deliberately not
+unified with the old mock `Conversation`/`ChatBubble` types (a real
+conversation's shape is genuinely richer — real user ids, real sender
+identity, call events). Screens branch explicitly on
+`isRealConversationId(id)`, the same pattern as `detail/[id].tsx`'s
+`isRealListingId` branching.
+
+`app/call/[id].tsx` — fully rewritten. Route param is now a real
+`CALL-#####` id. Polls `getCall` every 2.5s, driving all UI state from
+the real backend (no client-side timers simulating progress). Ring
+animation only plays while status is Ringing. Accept/Decline shown only
+while Ringing; a single End control while Active; a status label and
+back button for any terminal state. The old fake mute/speaker/keypad
+controls are removed entirely (they controlled no real audio stream). An
+always-visible on-screen banner discloses that call data is real while
+audio is not connected yet.
+
+`app/chat/[id].tsx` — real path added alongside the untouched mock path.
+Messages are grouped by calendar date exactly per the request's
+formatting (today/yesterday/full localized date, Arabic or English per
+the active language) — the grouping boundary uses the viewing device's
+own calendar day (standard chat-app behavior), but every message's
+underlying timestamp is 100% server `created_at`, never overwritten or
+recomputed locally. Conversation header shows the other participant's
+name and the linked listing. The call button opens a shared bottom-sheet
+component instead of calling immediately, with the two choices the
+request specifies (free in-app call / regular phone call). Free call
+starts a real call and navigates to the call screen. Regular call opens
+the native dialer gated on the privacy-checked phone number, with a
+"number not available" fallback instead of dialing a blank one.
+Foreground incoming-call detection polls for an active call every 3s and
+shows an accept/decline banner — gated on the current user actually being
+the callee, so a user never sees their own outgoing call misrendered as
+incoming. Image attach/send wired to the real upload+send endpoints. The
+existing Sale Confirmation Flow UI/logic is preserved unchanged and
+mock-only — not extended to real conversations this slice.
+
+`app/(tabs)/messages.tsx` — now renders real conversations (polled every
+5s) merged with the existing local mock list, each with its own row
+component, search spanning both.
+
+`app/detail/[id].tsx` — the message-seller action now starts a real
+conversation for real listings before navigating (idempotent — repeated
+taps land on the same conversation, not a new one each time); the sticky
+call button now opens the same shared call-choice sheet (previously
+navigated straight to the old fake call screen using the seller's id,
+which would have been a hard runtime failure against the rewritten call
+screen if left as-is — caught and fixed as part of this slice). Free call
+from this screen ensures a conversation exists first, then starts the
+call. Regular call uses the same privacy-gated phone number with the same
+fallback. Mock listings keep the exact previous behavior.
+
+`app/(tabs)/home.tsx` — unread-message badge now sums real conversations'
+unread counts (polled every 15s) together with the existing local count.
+
+`services/listingService.ts` — the seller adapter now handles the backend
+legitimately returning a null phone (§6's privacy gate), coerced to an
+empty string so it composes with the existing seller-phone type and every
+existing "no phone" check across the app without a wider type ripple.
+
+**Verification:** `tsc --noEmit` clean (zero errors) after every round of
+changes described above. `npx expo export --platform ios` bundles clean
+(1837 modules, no errors) — the closest available substitute for a real
+device run in this environment; it does not exercise runtime behavior,
+which is why the live HTTP tests in §8 exist as the actual correctness
+evidence for anything server-relevant.
+
+## 10. Security testing
+
+- Guest rejected (real 403) on every chat/call mutation and on every
+  private read.
+- Cross-user isolation: a stranger with no conversation gets a real 403
+  attempting to read or act on a conversation/call they're not part of —
+  tested by id, not just by absence from a list.
+- Call security specifically: caller/callee are always server-derived
+  from the conversation, never client-supplied — a user cannot reach an
+  arbitrary third party by passing a different id in any call endpoint,
+  because every call endpoint's first step is resolving the conversation
+  and asserting membership before anything else happens. The caller
+  cannot accept their own outgoing call; only the callee can decline;
+  either participant (not a third party) can end an active call.
+- Phone-number privacy verified as backend-authoritative across 5 live
+  scenarios — the mobile app has no way to force the number to appear; it
+  only ever displays what the server already decided to send.
+- No audio recording exists anywhere in this slice — nothing stores or
+  proxies a media stream, so there is nothing to audit for retention;
+  duration is a plain computed integer from two timestamps, not derived
+  from any captured audio.
+
+## 11. What's still mock / explicitly out of scope this slice
+
+- Sale Confirmation Flow (the "mark as sold from chat" UI) — fully
+  unchanged, mock-conversations-only. Not extended to real conversations
+  this slice; a real listing's mark-sold path remains the direct button
+  in My Ads (already real, from Slice 2).
+- `app/analytics.tsx`'s chat-count seller stats and `app/seller/[id].tsx`'s
+  chat entry point — untouched, still fully mock (the latter was already
+  non-functional for real users before this slice, since real
+  seller-profile pages don't exist yet — a pre-existing, disclosed gap
+  unrelated to chat).
+- Real-time delivery (socketio) — not wired up; polling only, disclosed
+  in §1.
+- Actual VoIP audio, background/incoming-call support (CallKit/
+  ConnectionService + push) — not built, documented architecture only,
+  §7.
+- Historical timestamps written before the §5 timezone fix are not
+  backfilled.
+
+## 12. Blockers
+
+None for the scope actually claimed below. Real VoIP audio and
+background incoming-call support remain blocked on infrastructure this
+environment cannot provide or test (native build pipeline, physical
+devices, push credentials) — not attempted, not claimed.
+
+## 13. Decision
+
+# GO — for real chat + timestamped history + call signaling/security + phone fallback
+# NO-GO — for actual in-app voice audio (not built; documented architecture only)
+
+Scoped exactly, per the original request's own final rule: do not report
+VoIP as GO unless an actual two-device/two-user voice call has been
+successfully tested. No such test occurred or could occur in this
+environment, so none is claimed.
+
+**What's GO:** real conversations and messages with server-authoritative
+timestamps, correctly date-grouped and localized on the mobile side; a
+real, secure call data model (start/accept/decline/end, ring-timeout,
+duration, full state machine) that is genuinely live-tested via HTTP
+end-to-end, including security (§10) and two real backend bugs found and
+fixed as a direct result of this slice's own testing (§4 GET-commit, §5
+timezone) plus one pre-existing privacy leak (§6); native phone-dialer
+fallback correctly gated by a real backend privacy rule instead of always
+showing the number; call-event timeline items that persist across app
+restart exactly as requested.
+
+**What's NO-GO:** the actual audio layer. `app/call/[id].tsx` discloses
+this on-screen rather than presenting fake progress. A concrete, justified
+provider recommendation (LiveKit, self-hosted) and integration shape are
+documented in §7 for the follow-up slice, rather than an SDK being
+installed and left unverified.
+
+**No Reviews/Jobs/Services/Notifications/Payments code touched.** No
+Phase 2A/Slice 1/2/3 regression — none of that code was modified this
+slice except the two narrowly-scoped fixes covered in §6 (the phone
+visibility helper, already covered under this slice since it's this
+slice's own requirement that surfaced it) and the seller-phone type
+widening in §9. No mock data deleted globally — `store/useAppStore.ts`'s
+local `conversations` array and the Sale Confirmation Flow remain fully
+intact and functional for mock listings.

@@ -96,15 +96,41 @@ def _resolve_location_display(location_key: str):
 	return governorate, district
 
 
-def _seller_public_info(user: str):
+def _phone_visible_to_viewer(seller: str, listing_id: str):
+	"""لقيّة حقيقية اتصلحت وقت بناء Phase 2B Slice 4 (خصوصية رقم الهاتف،
+	القسم 6 من الطلب): get_listing كانت بترجّع رقم البائع لأي حد شايف
+	الإعلان — حتى Guest — من غير أي فحص خصوصية خالص، من Slice 1. القاعدة
+	دلوقتي: الرقم بيتكشف لصاحب الإعلان نفسه (شايف إعلانه هو)، أو لمستخدم
+	عنده محادثة حقيقية (Souq Masr Conversation) مع البائع ده بخصوص
+	الإعلان ده بالذات — يعني لازم يكون بدأ شات فعلي، مش مجرد تصفّح.
+	Guest ومستخدم عادي متصفّح من غير محادثة، الاتنين ميشوفوش الرقم."""
+	viewer = frappe.session.user
+	if viewer == "Guest":
+		return False
+	if viewer == seller:
+		return True
+	return bool(
+		frappe.db.exists(
+			"Souq Masr Conversation",
+			{"listing": listing_id, "buyer": ["in", (viewer,)], "seller": seller},
+		)
+		or frappe.db.exists(
+			"Souq Masr Conversation",
+			{"listing": listing_id, "seller": ["in", (viewer,)], "buyer": seller},
+		)
+	)
+
+
+def _seller_public_info(user: str, listing_id: str = None):
 	row = frappe.db.get_value("User", user, ["first_name", "mobile_no", "creation"], as_dict=True)
 	if not row:
-		return {"id": user, "name": "", "phone": "", "member_since": "", "ads_count": 0}
+		return {"id": user, "name": "", "phone": None, "member_since": "", "ads_count": 0}
 	ads_count = frappe.db.count("Souq Masr Listing", {"owner": user, "status": "Active"})
+	reveal_phone = listing_id is not None and _phone_visible_to_viewer(user, listing_id)
 	return {
 		"id": user,
 		"name": row.first_name or "",
-		"phone": row.mobile_no or "",
+		"phone": row.mobile_no if reveal_phone else None,
 		"member_since": frappe.utils.formatdate(row.creation, "MMMM yyyy") if row.creation else "",
 		"ads_count": ads_count,
 	}
@@ -138,7 +164,7 @@ def _serialize(doc):
 		"attributes": {row.attr_key: row.value for row in doc.attributes},
 		"created_at": str(doc.creation),
 		"updated_at": str(doc.modified),
-		"seller": _seller_public_info(doc.owner),
+		"seller": _seller_public_info(doc.owner, doc.name),
 		"is_owner": frappe.session.user == doc.owner,
 		"is_favorite": _is_favorited_by_current_user(doc.name),
 	}

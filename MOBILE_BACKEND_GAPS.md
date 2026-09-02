@@ -12,6 +12,8 @@ souq_masr/api/v1/listings.py     — 12 endpoints (built + live-tested, Phase 2B
 souq_masr/api/v1/favorites.py    — 4 endpoints (integrated, Phase 2B Slice 3 — Listings only, Services untouched)
 souq_masr/api/v1/saved_searches.py — 3 endpoints (integrated, Phase 2B Slice 3)
 souq_masr/api/v1/reports.py      — 2 endpoints (integrated, Phase 2B Slice 3 — Listings only)
+souq_masr/api/v1/chat.py         — 6 endpoints (integrated, Phase 2B Slice 4 — real conversations/messages, server timestamps)
+souq_masr/api/v1/calls.py        — 6 endpoints (integrated, Phase 2B Slice 4 — real call signaling/state/security; NOT real audio, see below)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -117,11 +119,26 @@ wallet remain unbuilt — none of those domains were touched this slice.
 
 ## Phase 2E — Chat
 
-| Feature | Required endpoint (proposed) | Auth | Priority |
+**Update (Slice 4):** real conversations, messages (with server
+timestamps), and call signaling/state are now **built, live-tested, and
+wired** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B Slice 4
+section for the full detail, live HTTP results, and two backend bugs
+found and fixed (GET-requests-don't-commit; site-wide timezone
+misconfiguration) plus a phone-privacy leak fixed. **Actual VoIP audio is
+still a gap** — deliberately not built this slice (untestable in this
+environment); a concrete provider recommendation (LiveKit, self-hosted)
+and integration shape are documented in the same report section for a
+future slice.
+
+| Feature | Status | Auth | Priority |
 |---|---|---|---|
-| List conversations | `souq_masr.api.v1.chat.list_conversations` | Auth | High |
-| Send/receive messages | `souq_masr.api.v1.chat.send_message`, real-time delivery (Frappe's `realtime`/socketio — already running on the VPS, confirmed in `BACKEND_PRODUCTION_READINESS.md` §10, unused so far) | Auth | High |
-| Sold-confirmation flow (`types/sale.ts`, already fully designed client-side) | `souq_masr.api.v1.sales.confirm` | Auth | Medium |
+| Start/list/read conversations | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.chat.{start_conversation,get_my_conversations,get_conversation}` — normalized `Souq Masr Conversation`/`Souq Masr Message` DocTypes, create-only permissions (two-participant membership enforced explicitly in Python, not via DocType perms). `app/(tabs)/messages.tsx`, `app/chat/[id].tsx`, `app/detail/[id].tsx` all real-backend-aware for real listings. | Auth | Done |
+| Send/receive messages (text + image) | ✅ **Built, live-tested, wired.** `send_message`/`send_image_message`, real server `creation` timestamp on every message (see the timezone-fix note above), date-grouped display on mobile (اليوم/أمس/full date, Arabic or English per active language). | Auth | Done |
+| Real-time delivery | ⏳ Not wired — polling (2.5-5s depending on screen) used instead this slice. Frappe's `realtime`/socketio confirmed running on the VPS (`BACKEND_PRODUCTION_READINESS.md` §10) but not connected to the mobile client. | Auth | Medium |
+| Call signaling (start/accept/decline/end, ring-timeout, duration, call-event timeline) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.calls.*` — `Souq Masr Call` DocType, caller/callee always server-derived from conversation membership (never client-supplied). `app/call/[id].tsx` fully rewritten off the old fake-timer simulation onto real polling of this backend. | Auth | Done |
+| Actual VoIP audio (WebRTC) | ⛔ **Not built.** Architecture documented (LiveKit, self-hosted) in the integration report — needs an EAS dev-client/custom build (native module), out of reach of Expo Go and this environment's testing capability. | Auth | High (next) |
+| Background/incoming-call support (CallKit/ConnectionService + push) | ⛔ **Not built.** Needs a VoIP push channel (APNs VoIP push + FCM) and a paid Apple Developer entitlement, neither present yet. Foreground-only incoming-call detection (polling while the chat screen is open) is built as a disclosed partial substitute. | Auth | Medium (after audio) |
+| Sold-confirmation flow (`types/sale.ts`, already fully designed client-side) | ⏳ Not built — still fully mock, unextended to real conversations this slice (a real listing's mark-sold path already works via My Ads directly, from Slice 2) | Auth | Medium |
 
 ## Phase 2F — Listing creation / edit / images
 
@@ -155,4 +172,4 @@ a small, contained follow-up once basic Listings usage patterns are clear.
 
 - **Admin dashboard** (`admin/`) — untouched per this phase's explicit instruction, not evaluated here.
 - **Domain + SSL** for the backend — tracked in `BACKEND_PRODUCTION_READINESS.md` §12, not a mobile-integration gap.
-- **Chat, Reviews, Jobs, Services, Notifications, Payments** — explicitly excluded from Phase 2B by this phase's own instruction, not evaluated here. (Favorites/Saved Searches/Reports for **Listings** specifically are now built — Phase 2B Slice 3, see above; Favorites for Services/Jobs remain local-only, untouched.)
+- **Reviews, Jobs, Services, Notifications, Payments** — explicitly excluded from Phase 2B by this phase's own instruction, not evaluated here. (Favorites/Saved Searches/Reports for **Listings** specifically are now built — Phase 2B Slice 3; real Chat + call signaling are now built — Phase 2B Slice 4 (VoIP audio itself excepted, see the Phase 2E table above), see `MOBILE_BACKEND_INTEGRATION_REPORT.md`. Favorites for Services/Jobs remain local-only, untouched.)

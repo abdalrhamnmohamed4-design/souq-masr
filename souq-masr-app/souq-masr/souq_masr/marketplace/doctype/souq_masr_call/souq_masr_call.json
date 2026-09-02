@@ -1,0 +1,48 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Call",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "format:CALL-{#####}",
+  "naming_rule": "Expression",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["conversation", "caller", "callee", "listing", "call_type", "status", "started_at", "answered_at", "ended_at", "duration"],
+  "fields": [
+    { "fieldname": "conversation", "label": "Conversation", "fieldtype": "Link", "options": "Souq Masr Conversation", "reqd": 1, "in_standard_filter": 1 },
+    { "fieldname": "caller", "label": "Caller", "fieldtype": "Link", "options": "User", "reqd": 1, "description": "Always frappe.session.user at start_call time — never client-supplied." },
+    { "fieldname": "callee", "label": "Callee", "fieldtype": "Link", "options": "User", "reqd": 1, "description": "Derived server-side from the conversation's other participant — never a client-supplied id (prevents calling an arbitrary user by manipulating ids)." },
+    { "fieldname": "listing", "label": "Listing", "fieldtype": "Link", "options": "Souq Masr Listing", "description": "Denormalized from conversation.listing for convenient querying." },
+    { "fieldname": "call_type", "label": "Call Type", "fieldtype": "Select", "options": "voice", "default": "voice" },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Ringing\nActive\nEnded\nDeclined\nMissed\nCancelled\nFailed",
+      "default": "Ringing",
+      "reqd": 1,
+      "in_standard_filter": 1
+    },
+    { "fieldname": "started_at", "label": "Started At", "fieldtype": "Datetime", "reqd": 1 },
+    { "fieldname": "answered_at", "label": "Answered At", "fieldtype": "Datetime" },
+    { "fieldname": "ended_at", "label": "Ended At", "fieldtype": "Datetime" },
+    { "fieldname": "duration", "label": "Duration (seconds)", "fieldtype": "Int", "description": "answered_at to ended_at, computed server-side on end_call — only set for calls that actually reached Active." }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}
