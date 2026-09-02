@@ -5,7 +5,13 @@ description = "Marketplace, Jobs, and Services layer for ERPNext — custom Frap
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
-dependencies = []
+# livekit-api: server-side token generation + room admin for Phase 2B
+# Slice 4B's real voice calling (souq_masr/api/v1/calls.py's
+# get_rtc_token) — signs short-lived, audio-only-scoped tokens against
+# the self-hosted LiveKit server. Tracked here (not just pip-installed
+# ad hoc on the VPS) so a future `bench setup requirements`/reinstall
+# doesn't silently drop it.
+dependencies = ["livekit-api>=1.2.1"]
 
 [build-system]
 requires = ["flit_core >=3.4,<4"]

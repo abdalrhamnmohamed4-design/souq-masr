@@ -1,26 +1,40 @@
 # Copyright (c) 2026, Souq Masr and contributors
 # For license information, please see license.txt
 #
-# Phase 2B Slice 4 — real call signaling/state (Souq Masr Call), NOT real
-# voice audio. This module tracks who called whom, when, and what
-# happened — genuinely real, live-tested, backend-authoritative. It does
-# not carry any audio itself: no WebRTC, no third-party RTC provider is
-# wired up this slice (see MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B
-# Slice 4 section for the documented architecture recommendation and why
-# it isn't built here — it needs a native mobile build and physical
-# devices to verify, neither available in this environment).
+# Phase 2B Slice 4 — real call signaling/state (Souq Masr Call): who
+# called whom, when, current state, duration, security, timeline —
+# genuinely real, live-tested, backend-authoritative.
+#
+# Phase 2B Slice 4B — adds get_rtc_token, the one function that actually
+# authorizes real voice audio: a short-lived, audio-only-scoped LiveKit
+# access token (self-hosted LiveKit, see MOBILE_BACKEND_INTEGRATION_REPORT.md's
+# Phase 2B Slice 4B section for the full deployment). This module still
+# never touches the audio stream itself — it only decides WHO may join
+# WHICH room, with WHAT permissions (microphone publish only, never
+# video). The actual media transport is LiveKit's job entirely.
 #
 # caller/callee are ALWAYS derived from the conversation's own
 # buyer/seller fields — callee is never a client-supplied id. This is
 # what stops User A from starting a call to an arbitrary User C by
-# manipulating ids (§7 of the request): the only way to reach anyone at
-# all is through a conversation you're already a real participant of.
+# manipulating ids: the only way to reach anyone at all is through a
+# conversation you're already a real participant of. The same rule
+# extends to get_rtc_token: a token is only ever issued to the actual
+# caller/callee of the specific call requested, scoped to that call's own
+# room, audio-only.
 #
-# No audio, no recording: nothing here stores or proxies any audio
+# No audio, no recording: nothing in this app stores or proxies any audio
 # stream. duration is a plain integer computed from two timestamps.
 
 import frappe
+from datetime import timedelta
 from frappe.utils import now_datetime
+from livekit import api as livekit_api
+
+# Phase 2B Slice 4B — مدة صلاحية الـtoken قصيرة عمدًا (القسم 7 من الطلب)،
+# آمن لأن LiveKit بيتحقق من الـJWT وقت الاتصال الأول بس، مش طول عمر
+# الجلسة — يعني مكالمة شغّالة فعليًا ميتقطعش لو الـtoken انتهت صلاحيته
+# وهو لسه متصل، بس محدش يقدر يستخدم نفس الـtoken بعد كده يبدأ اتصال جديد.
+LIVEKIT_TOKEN_TTL_SECONDS = 600
 
 # لو Ringing فضلت من غير رد أكتر من كده، بتتحسب Missed تلقائيًا أول ما
 # أي نداء (accept/decline/get_active_call_for_conversation) يلاقيها —
@@ -113,6 +127,49 @@ def _format_duration(seconds):
 	return f"{m:02d}:{s:02d}"
 
 
+def _livekit_credentials():
+	api_key = frappe.conf.get("livekit_api_key")
+	api_secret = frappe.conf.get("livekit_api_secret")
+	ws_url = frappe.conf.get("livekit_ws_url")
+	if not api_key or not api_secret or not ws_url:
+		frappe.throw(frappe._("Voice calling is not configured on this server"), frappe.ValidationError)
+	return api_key, api_secret, ws_url
+
+
+def _livekit_http_url(ws_url):
+	# LiveKitAPI's admin/room endpoints speak http(s), not ws(s) — same
+	# host/port, different scheme. The mobile client gets the ws(s) form
+	# (services/rtcService.ts), this is server-side only.
+	return ws_url.replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+
+
+def _ensure_room(doc):
+	"""بتنشئ غرفة LiveKit صراحة بـmax_participants=2 — دفاع إضافي (مش
+	بديل) عن الفحص الأساسي في get_rtc_token: حتى لو token اتسرّب أو
+	انسخ بطريقة ما، مفيش طرف ثالث يقدر ينضم للغرفة دي أصلًا لأنها مقفولة
+	على شخصين بالظبط (القسم 4 من طلب Slice 4B). لو فشلت (السيرفر مش
+	متاح مؤقتًا مثلًا)، مش بنوقف بدء المكالمة — LiveKit بينشئ الغرفة
+	تلقائيًا أول ما أول مشارك ينضم على أي حال، بس من غير حد max_participants
+	الصريح ده في الحالة دي؛ بنسجّل الخطأ في error log عشان يبان، مش بنبلعه
+	بصمت."""
+	import asyncio
+
+	async def _create():
+		api_key, api_secret, ws_url = _livekit_credentials()
+		lkapi = livekit_api.LiveKitAPI(_livekit_http_url(ws_url), api_key, api_secret)
+		try:
+			await lkapi.room.create_room(
+				livekit_api.CreateRoomRequest(name=doc.name, max_participants=2, empty_timeout=300)
+			)
+		finally:
+			await lkapi.aclose()
+
+	try:
+		asyncio.run(_create())
+	except Exception:
+		frappe.log_error(title="LiveKit: failed to pre-create room", message=frappe.get_traceback())
+
+
 @frappe.whitelist()
 def start_call(conversation_id):
 	user = _current_user()
@@ -141,6 +198,7 @@ def start_call(conversation_id):
 	doc.status = "Ringing"
 	doc.started_at = now_datetime()
 	doc.insert()
+	_ensure_room(doc)
 	return _serialize_call(doc)
 
 
@@ -237,3 +295,43 @@ def get_active_call_for_conversation(conversation_id):
 	if doc.status not in ("Ringing", "Active"):
 		return {"call": None}
 	return {"call": _serialize_call(doc)}
+
+
+@frappe.whitelist()
+def get_rtc_token(call_id):
+	"""Phase 2B Slice 4B — الطبقة الوحيدة اللي بتوّلد LiveKit access token
+	حقيقي. الغرفة = اسم المكالمة نفسه (CALL-#####) بالظبط — نفس القيد
+	الأمني بتاع كل endpoint تاني في الملف ده: المستخدم لازم يبقى caller أو
+	callee على *المكالمة دي بالذات* (اتأكد فعليًا فوق، مش افتراض)، فمفيش
+	طريقة يوصل بيها لغرفة/هوية تانية بمجرد تمرير id مختلف (القسم 4 و7 من
+	طلب Slice 4B: "Prevent arbitrary users from generating tokens for
+	rooms they are not authorized to access").
+
+	صوت بس — canPublishSources مقصورة على "microphone" فقط، مفيش أي صلاحية
+	نشر كاميرا/شير-سكرين خالص على مستوى الـtoken نفسه (مش مجرد إخفاء زرار
+	في الواجهة — حتى لو تطبيق موبايل معدّل حاول ينشر فيديو، LiveKit
+	السيرفر نفسه هيرفضه لأن الـtoken ملوش الصلاحية دي أصلًا)."""
+	user = _current_user()
+	doc = _get_call_or_404(call_id)
+	if user not in (doc.caller, doc.callee):
+		frappe.throw(frappe._("You are not a participant in this call"), frappe.PermissionError)
+	doc = _resolve_stale_ringing(doc)
+	if doc.status not in ("Ringing", "Active"):
+		frappe.throw(frappe._("Cannot get a voice token for a call with status '{0}'").format(doc.status), frappe.ValidationError)
+
+	api_key, api_secret, ws_url = _livekit_credentials()
+	grants = livekit_api.VideoGrants(
+		room_join=True,
+		room=doc.name,
+		can_publish=True,
+		can_publish_sources=["microphone"],
+		can_subscribe=True,
+	)
+	token = (
+		livekit_api.AccessToken(api_key, api_secret)
+		.with_identity(user)
+		.with_ttl(timedelta(seconds=LIVEKIT_TOKEN_TTL_SECONDS))
+		.with_grants(grants)
+		.to_jwt()
+	)
+	return {"token": token, "ws_url": ws_url, "room": doc.name, "identity": user}
