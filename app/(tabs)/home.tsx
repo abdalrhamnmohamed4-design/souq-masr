@@ -18,22 +18,23 @@ import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useFabScrollHandler } from '@/lib/scrollFab';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
 import { Icon, type IconName } from '@/components/Icon';
 import { LocationPicker } from '@/components/LocationPicker';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { ThumbPlaceholder } from '@/components/primitives/ThumbPlaceholder';
+import { combineApiResultList, useApiResult } from '@/hooks/useApiResult';
 import { useT } from '@/i18n';
 import {
   cheapestListings,
   featuredListings,
-  homeCategories,
   listingsInCategoryIds,
   listingsInCity,
   newestListings,
 } from '@/mock/homeFeed';
-import { categoryLabel, getAllDescendantIds, getCategory } from '@/mock/taxonomy/categories';
+import { categoryLabel, getAllDescendantIds } from '@/mock/taxonomy/categories';
 import { locationPathLabel } from '@/mock/taxonomy/locations';
-import { getBrandsForCategory } from '@/mock/taxonomy/brands';
+import { getBrandsForCategory, getCategory, getChildren } from '@/services/taxonomyService';
 import { useAppStore, useDiscoverableListings } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
 import { useAllJobs, useAllServices } from '@/store/useJobsStore';
@@ -81,16 +82,39 @@ export default function Home() {
   const featured = featuredListings(allListings);
   const cheapest = cheapestListings(allListings);
   const nearby = listingsInCity(allListings, city);
+  // الإعلانات لسه محلية (mock) لحد Phase 2B — التصنيفات بس بقت حقيقية من
+  // Phase 2A، بس getAllDescendantIds فاضلة تقرا من mock/taxonomy لأن دي
+  // بتخدم فلترة الإعلانات المحلية بس، ونفس الـid بين mock والباك إند
+  // مطابق حرفيًا (نفس التصميم من الأول) — شوف
+  // MOBILE_BACKEND_INTEGRATION_REPORT.md.
   const carListings = listingsInCategoryIds(allListings, getAllDescendantIds(CAR_CATEGORY_ID));
   const realEstateListings = listingsInCategoryIds(allListings, getAllDescendantIds(REAL_ESTATE_PARENT_ID));
-  const carBrands = getBrandsForCategory(CAR_CATEGORY_ID).slice(0, 8);
-  const propertyTypes = getCategory('realestate_sale')?.fields.find((f) => f.key === 'propertyType')?.options ?? [];
   const publishedJobsCount = useAllJobs().filter((j) => j.status === 'published').length;
   const activeServicesCount = useAllServices().filter((s) => s.status === 'active').length;
-  const localBrandShortcuts = LOCAL_BRAND_SHORTCUT_IDS.map((s) => {
-    const cat = getCategory(s.id);
-    return { id: s.id, icon: s.icon, label: cat ? categoryLabel(cat, language) : s.id };
-  });
+
+  // ============ Phase 2A: تصنيفات حقيقية من الباك إند ============
+  const { state: categoriesState, refetch: refetchCategories } = useApiResult(
+    () => getChildren(),
+    [],
+    (data) => data.length === 0,
+  );
+  const homeCategoryList = categoriesState.kind === 'success' ? categoriesState.data.slice(0, 7) : [];
+
+  const { state: brandShortcutsState } = useApiResult(
+    () => Promise.all(LOCAL_BRAND_SHORTCUT_IDS.map((s) => getCategory(s.id))).then(combineApiResultList),
+    [],
+  );
+  const localBrandShortcuts =
+    brandShortcutsState.kind === 'success'
+      ? brandShortcutsState.data.map((cat, i) => ({ id: cat.id, icon: LOCAL_BRAND_SHORTCUT_IDS[i].icon, label: categoryLabel(cat, language) }))
+      : [];
+
+  const { state: propertyTypesState } = useApiResult(() => getCategory('realestate_sale'), []);
+  const propertyTypes =
+    propertyTypesState.kind === 'success' ? propertyTypesState.data.fields.find((f) => f.key === 'propertyType')?.options ?? [] : [];
+
+  const { state: carBrandsState } = useApiResult(() => getBrandsForCategory(CAR_CATEGORY_ID), []);
+  const carBrands = carBrandsState.kind === 'success' ? carBrandsState.data.slice(0, 8) : [];
 
   return (
     <Animated.ScrollView
@@ -154,19 +178,23 @@ export default function Home() {
         </View>
       </View>
 
-      {/* ============ الأقسام ============ */}
+      {/* ============ الأقسام — Phase 2A: get_children حقيقي ============ */}
       <SectionHead title={t('home.categories')} sub={t('home.mostUsed')} />
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: spacing.s4 }}>
-        {homeCategories.map((c) => (
-          <Pressable key={c.id} onPress={() => router.push(`/category/${c.id}`)} style={{ width: '22.5%', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingVertical: 12, alignItems: 'center' }}>
-            <Icon name={c.icon} color={colors.ink2} />
-            <Text style={{ fontSize: 10.5, fontWeight: '600', color: colors.ink2, marginTop: 5 }}>{categoryLabel(c, language)}</Text>
+      {categoriesState.kind === 'success' ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: spacing.s4 }}>
+          {homeCategoryList.map((c) => (
+            <Pressable key={c.id} onPress={() => router.push(`/category/${c.id}`)} style={{ width: '22.5%', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingVertical: 12, alignItems: 'center' }}>
+              <Icon name={c.icon} color={colors.ink2} />
+              <Text style={{ fontSize: 10.5, fontWeight: '600', color: colors.ink2, marginTop: 5 }}>{categoryLabel(c, language)}</Text>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => router.push('/categories')} style={{ width: '22.5%', backgroundColor: colors.signalWash, borderWidth: 1, borderColor: colors.signal, borderRadius: 14, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 }}>
+            <Text style={{ fontSize: 10.5, fontWeight: '700', color: colors.signal2, textAlign: 'center' }}>{t('home.allCategories')}</Text>
           </Pressable>
-        ))}
-        <Pressable onPress={() => router.push('/categories')} style={{ width: '22.5%', backgroundColor: colors.signalWash, borderWidth: 1, borderColor: colors.signal, borderRadius: 14, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 }}>
-          <Text style={{ fontSize: 10.5, fontWeight: '700', color: colors.signal2, textAlign: 'center' }}>{t('home.allCategories')}</Text>
-        </Pressable>
-      </View>
+        </View>
+      ) : (
+        <ApiStateView state={categoriesState} onRetry={refetchCategories} />
+      )}
 
       {/* ============ براندات محلية — قسم تسوّق مميّز (أزياء/جمال/لايف
           ستايل) بدل ما تفضل مدفونة جوه "كل الأقسام". مدخل اكتشاف بس

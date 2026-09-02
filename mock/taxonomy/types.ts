@@ -169,6 +169,10 @@ export type Category = {
   icon: IconName;
   order: number;
   hasBrands?: boolean; // بيفعّل خطوة اختيار براند/موديل في نموذج النشر
+  /** ليها أبناء ولا لأ — جاي من Frappe's is_group على get_children بس
+   * (Phase 2A). مش موجود لما المصدر mock (مفيش استخدام قديم بيعتمد عليه)
+   * ولا لما الكائن جاي من get_category (تفاصيل تصنيف واحد، مش قايمة). */
+  isGroup?: boolean;
   fields: CategoryField[];
   allowedConditions?: Condition[];
   allowedSellingTypes?: SellingType[];

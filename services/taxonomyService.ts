@@ -107,6 +107,7 @@ function adaptCategorySummary(c: RawCategorySummary, parentId: string | null): C
     icon: c.icon as IconName,
     order: c.sort_order,
     hasBrands: !!c.has_brands,
+    isGroup: !!c.is_group,
     fields: [],
   };
 }

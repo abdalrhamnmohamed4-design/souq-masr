@@ -80,3 +80,31 @@ export function useApiResult<T>(
 
   return { state, refetch: run };
 }
+
+/**
+ * بيجمع نتايج ApiResult متعددة من **نفس النوع** في نتيجة واحدة (مثال:
+ * جلب تفاصيل 6 تصنيفات مختلفة مع بعض) — أول نتيجة مش success بتوقّف
+ * الباقي وترجع زي ما هي، مش نوع خطأ جديد. مستخدم في app/(tabs)/home.tsx
+ * (اختصارات البراندات المحلية) بدل ما كل شاشة تكتب نفس منطق التجميع ده
+ * بنفسها.
+ */
+export function combineApiResultList<T>(results: ApiResult<T>[]): ApiResult<T[]> {
+  for (const r of results) {
+    if (r.status !== 'success') return r;
+  }
+  return { status: 'success', data: (results as { status: 'success'; data: T }[]).map((r) => r.data) };
+}
+
+/**
+ * بيجمع نتايج ApiResult من **أنواع مختلفة** (tuple) في نتيجة واحدة —
+ * مستخدم في app/category/[id].tsx (تفاصيل التصنيف + أبناؤه + مساره،
+ * التلاتة مع بعض بـPromise.all واحد بدل 3 نداءات متتالية).
+ */
+export function combineApiResultsTuple<T extends readonly unknown[]>(
+  results: { [K in keyof T]: ApiResult<T[K]> },
+): ApiResult<T> {
+  for (const r of results) {
+    if (r.status !== 'success') return r as ApiResult<T>;
+  }
+  return { status: 'success', data: results.map((r) => (r as { status: 'success'; data: unknown }).data) as unknown as T };
+}
