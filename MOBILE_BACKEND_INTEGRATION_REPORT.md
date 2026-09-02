@@ -3452,3 +3452,211 @@ regression to any prior GO slice (Reviews/Jobs/Chat/Calls/Listings all
 re-verified unaffected by inspection — no shared file was modified
 except the already-audited `toggleFavorite` branch condition, which was
 read, not changed).
+
+---
+
+# Phase 2B — Notifications
+
+**Scope, exactly:** real, server-generated notification records (never
+client-fabricated) with unread/read state, mark-read/mark-all-read,
+listing/pagination — wired to genuine backend events already built in
+prior slices (messages, missed calls, reviews, job applications).
+**Explicitly separated per this slice's own instruction:** device push
+transport (the part that wakes a phone when the app isn't open) is
+**not built** — documented as a distinct, device-test-dependent
+follow-up, the same honest split already established for LiveKit's
+voice audio.
+
+## 1. What "real events" means here — audit before building
+
+Read `app/notifications.tsx` and `store/useAppStore.ts`'s
+`NotificationType`/`NotificationItem`/`addNotification` and every one of
+its 6 call sites. All 6 existing triggers
+(`ad_published`/`ad_promoted`/`ad_renewed`/`payment_confirmed`×2/
+`review_received`) fire **only** for mock actions — a user doing 100%
+real actions across every prior GO slice got zero notifications before
+this one. That gap is what this slice closes for the events that
+genuinely originate server-side today:
+
+| Real trigger | Fires in | Recipient |
+|---|---|---|
+| New chat message | `chat.py`'s `send_message`/`send_image_message` | The other conversation participant |
+| Missed call | `calls.py`'s `_resolve_stale_ringing` (Ringing → Missed) | The callee |
+| New seller review | `reviews.py`'s `submit_review` (first submission only, not every edit) | The reviewed seller |
+| New job application | `job_applications.py`'s `apply_to_job` | The job's employer |
+| Application status changed | `job_applications.py`'s `set_application_status` | The candidate |
+| Interview scheduled | `job_interviews.py`'s `schedule_interview` | The candidate |
+
+**Deliberately not wired, documented rather than silently skipped:**
+- **Saved-search-match notifications** ("a new listing matches your
+  saved search") — this needs a fundamentally different mechanism (a
+  background/scheduled job scanning new listings against every saved
+  search's criteria), not a mutation side-effect like every trigger
+  above. A real, scoped follow-up, not attempted here.
+- **Payment confirmations** — Payments doesn't exist as a real backend
+  yet (next section). `notify()` is ready to receive that call the exact
+  same way the moment it does.
+
+## 2. Backend DocType
+
+| DocType | Autoname | Shape | Permissions |
+|---|---|---|---|
+| `Souq Masr Notification` | `hash` | type (Select, 10 values)/title/body/reference_type/reference_id/is_read | Admin full; `All`+if_owner: read/write=1 — **deliberately no `All: create=1` at all** |
+
+`owner` here means "the recipient this notification is for," not "who
+created it" — set explicitly server-side (§3). No client-facing
+`create_notification` endpoint exists anywhere in this app; every row is
+strictly a side-effect of one of the 6 real triggers in §1, which is
+what actually satisfies "do not fabricate notifications merely to make
+the UI populated" — there is no code path for a notification to exist
+without a real, specific, already-verified event behind it.
+
+## 3. A real Frappe behavior found and fixed via live testing
+
+`souq_masr/api/v1/notifications.py`'s `notify(recipient, ...)` helper
+originally set `doc.owner = recipient` **before** calling `doc.insert()`.
+Live testing (§5, group 3) showed the resulting notification landing on
+the *sender's own account*, not the intended recipient. Root cause,
+confirmed directly via bench console: **Frappe's `insert()` always
+overwrites `owner` to `frappe.session.user`, silently discarding any
+value already assigned to the field beforehand — even with
+`ignore_permissions=True`.** This is a real, intentional Frappe
+anti-spoofing measure (nothing should be able to fabricate a document's
+author at insert time), not a bug in Frappe itself, but it directly
+broke this feature's core requirement (create a record "on behalf of"
+someone else). Verified with a minimal reproduction in bench console
+before fixing: set `doc.owner`, insert, print `doc.owner` after —
+confirmed it silently became `Administrator` (the console's session
+user), not the assigned value.
+
+**Fix:** insert the document normally, then immediately overwrite
+`owner` via a raw DB write (`frappe.db.set_value(..., "owner", recipient,
+update_modified=False)`), which bypasses the ORM's insert-time
+protection — the standard, documented Frappe pattern for "create this
+record as/for a different user than the one making the request."
+Redeployed, full test suite re-run clean, including re-confirming the
+missed-call case's real 46-second wait still worked end-to-end afterward.
+
+**Also deliberately NOT auto-skipping self-notifications** in the shared
+helper (a "don't notify yourself" guard was considered and removed
+before shipping): every current trigger's recipient is already
+structurally guaranteed different from the actor by its own domain logic
+(the *other* chat participant, a distinct callee, a distinct reviewed
+seller, a distinct employer) — except the missed-call case, where
+`_resolve_stale_ringing` can be triggered by *either* party's own poll
+request, and the callee must still be notified even when their own
+request happened to be what triggered the timeout resolution. A blanket
+skip-self guard would have silently broken exactly that case.
+
+## 4. API endpoints
+
+`souq_masr/api/v1/notifications.py`: `notify()` (internal Python
+function, not whitelisted — imported directly by `chat.py`/`calls.py`/
+`reviews.py`/`job_applications.py`/`job_interviews.py`),
+`get_my_notifications(page, limit)` (includes `unread_count` in the same
+response, avoiding a second round-trip), `get_unread_count()`,
+`mark_read(notification_id)` (owner-only), `mark_all_read()`,
+`remove_notification(notification_id)` (owner-only).
+
+## 5. Live HTTP test results (`test_notifications.py`, 13 groups)
+
+Two real users, real signin tokens, all passed — including a genuine
+46-second wait for the missed-call trigger, not simulated:
+
+```
+1. Guest cannot read notifications -> 403
+2. Fresh account starts at 0 unread
+3. Real chat message -> recipient's unread count +1, notification content/reference correct
+4. Sender gets NO notification for their own message (confirms no self-notify bug survived)
+5. mark_read -> notification flips to read
+6. A stranger CANNOT mark another user's notification as read -> 403
+7. Real missed call (genuine 46s ring-timeout wait) -> callee gets a real call_missed notification
+8. Real review submission -> seller gets a real review_received notification
+9. Real job application -> employer gets a real job_application_received notification
+10. Real application status change -> candidate gets a real job_application_status_changed notification
+11. mark_all_read -> unread_count drops to 0
+12. remove_notification scoped to the owner only -> stranger rejected, owner succeeds
+13. Invalid notification id -> clean 404, no traceback/filesystem-path leakage
+
+NOTIFICATIONS TESTS PASSED
+```
+
+## 6. Security/ownership test results
+
+Guest rejected on every read (§5.1); `mark_read`/`remove_notification`
+verified scoped to the actual recipient against a real second user, not
+just reasoned about (§5.6, §5.12); no client-facing way to create a
+notification at all (§2); self-notification correctly does not occur for
+any of the 6 real triggers (§5.4); invalid input produces a clean 404,
+never a traceback (§5.13).
+
+## 7. Mobile changes
+
+- `services/notificationService.ts` (new) — same adapter/`ApiResult`
+  pattern as every prior slice.
+- `app/notifications.tsx` — real notifications (polled every 20s) merged
+  with the existing local mock list, same visual treatment for both,
+  tap-to-navigate covers all real `reference_type` values (`listing`→
+  detail, `conversation`→chat, `job`→job detail, `application`→the
+  applications list screen since no per-application real detail route
+  exists yet, `service`→service detail).
+- `app/(tabs)/home.tsx` — the notifications bell badge now sums real
+  unread count (polled every 20s) together with the existing local
+  count, same pattern already used for the messages badge in Slice 4.
+
+**Verification:** `tsc --noEmit` clean, `expo export --platform ios`
+clean.
+
+## 8. Push notification transport — NOT built, explicitly separated
+
+Per this slice's own instruction to keep server-side notification
+functionality and device push transport clearly distinct: **only the
+first is built.** What full push delivery would additionally need,
+none of which exists yet:
+- Requesting notification permission and obtaining an Expo push token
+  on-device (`expo-notifications`, already an installed dependency and
+  already declared as an `app.json` plugin from earlier phases, but
+  never actually used for push registration anywhere in this codebase).
+- A `Souq Masr Push Token` DocType (or similar) storing each user's
+  token(s), registered from the app on launch/login.
+- A server-side call to Expo's push API (or FCM/APNs directly) at the
+  same points `notify()` already fires, sending the OS-level push
+  alongside the in-app record.
+- None of this can be meaningfully verified in this environment — same
+  root constraint as LiveKit's voice audio (§ Phase 2B Slice 4B): a push
+  token can only be obtained from a real app running on a real device,
+  and delivery can only be confirmed by seeing a real device receive it.
+
+**What is real and fully verified today:** the in-app notification
+center itself — a user who opens the app sees accurate, real,
+timely notifications generated by genuine backend events, with correct
+unread counts and read-state, exactly as `app/notifications.tsx` already
+promised. What's missing is only the "wake the phone while the app is
+closed" layer, not the underlying event/record system.
+
+## 9. What's still mock / explicitly out of scope this slice
+
+- Push transport (§8).
+- Saved-search-match notifications (§1) — needs a background job, not a
+  mutation side-effect.
+- Payment notifications (§1) — wired the moment a real Payments backend
+  exists.
+- The 6 pre-existing mock-only triggers
+  (`ad_published`/`ad_promoted`/`ad_renewed`/`payment_confirmed`×2)
+  continue to fire for mock actions exactly as before, unchanged.
+
+## 10. Blockers
+
+None for the scope actually claimed. Push transport is blocked on
+physical-device testing this environment cannot provide, same as
+LiveKit — not attempted, not claimed.
+
+## 11. Decision
+
+# ✅ GO — for server-side notification records/API and the 6 wired real triggers, fully live-tested including a real Guest/cross-user rejection round and a genuine 46-second missed-call wait
+# ⏳ NO-GO — for device push transport, not built this slice, explicitly separated per instruction (same honest split as LiveKit voice audio)
+
+One real Frappe framework behavior found and fixed via live testing
+(§3) — the kind of bug that would have silently sent every notification
+to the wrong user in production had it shipped unverified. No
+Payments code touched. No regression to any prior GO slice.

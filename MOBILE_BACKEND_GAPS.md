@@ -25,6 +25,7 @@ souq_masr/api/v1/career_profile.py — 3 endpoints (integrated, Phase 2B Jobs �
 souq_masr/api/v1/content_reports.py — 2 endpoints (integrated, Phase 2B Jobs — now also covers Services)
 souq_masr/api/v1/professional_profiles.py — 4 endpoints (integrated, Phase 2B Services)
 souq_masr/api/v1/services.py         — 8 endpoints (integrated, Phase 2B Services — core loop wired; my-services/results/discovery mobile screens not yet migrated)
+souq_masr/api/v1/notifications.py    — 5 endpoints + internal notify() helper (integrated, Phase 2B Notifications — server-side + in-app center only, push transport not built, see below)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -126,7 +127,7 @@ wallet remain unbuilt — none of those domains were touched this slice.
 | Reports — Listings | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.reports.{report_listing,has_reported}` — `Souq Masr Listing Report` DocType, create-only permissions (no read path for any non-admin role, by design). `app/detail/[id].tsx`'s report flow no longer fakes success for real listings. | Auth | Done for Listings |
 | Saved searches sync (`store`'s `savedSearches`) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.saved_searches.{create_saved_search,get_my_saved_searches,delete_saved_search}` — `Souq Masr Saved Search` DocType, schema-ready `location`/`min_price`/`max_price`/`sort` fields not yet populated (no UI collects them). `app/results.tsx`/`app/saved-searches.tsx` wired; a pre-existing filter-restoration bug fixed alongside. | **Auth** | Done |
 | Block/unblock seller | ⏳ Not built | Auth | Low |
-| Notifications | ⏳ Not built | Auth | Medium |
+| Notifications | ✅ **Built, live-tested, wired** — in-app center only, see Phase 2I below | Auth | Done (in-app), push pending |
 | Wallet (top-up, transfer, promote balance) | ⏳ Not built | Auth | Low (needs a real payment gateway decision first, not just an endpoint) |
 
 ## Phase 2E — Chat
@@ -221,6 +222,23 @@ full live HTTP test results. Mobile is migrated for the core loop only.
 | Favorites for services | ⏳ Not built — the shared local `favorites` mechanism continues (disclosed since Slice 3); a normalized `Souq Masr Service Favorite` table is a small, well-understood follow-up | Auth | Low |
 | Contact a provider via real chat | ⏳ Not built — would need `Souq Masr Conversation.listing` broadened to a Dynamic Link across Listings/Services, out of scope for this pass (risk to an already-shipped DocType); native dialer/WhatsApp links remain the only contact method, unchanged from the pre-existing mock UI | — | Medium |
 | Professional/Service reviews | ⏳ Not built — deferred a second time from this slice too; `content_reports.py`'s reporting already works for both target types | Auth (create) / Guest (list) | Medium |
+
+## Phase 2I — Notifications
+
+**New this pass:** real, server-generated notification records (never
+client-fabricated) — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase
+2B Notifications section for the exact 6 real triggers wired, a real
+Frappe `owner`-assignment behavior found and fixed via live testing, and
+the full live HTTP results (13 groups, including a genuine 46-second
+missed-call wait).
+
+| Feature | Status | Auth | Priority |
+|---|---|---|---|
+| In-app notification center (list/unread/mark-read/mark-all-read/remove) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.notifications.*`. `app/notifications.tsx` merges real notifications with the pre-existing local mock list; `app/(tabs)/home.tsx`'s bell badge sums both. | Auth | Done |
+| Real event triggers (message/missed-call/review/job-application/application-status/interview) | ✅ **Built, live-tested** — 6 real triggers wired directly into `chat.py`/`calls.py`/`reviews.py`/`job_applications.py`/`job_interviews.py`. | — (server-internal) | Done |
+| Device push transport (wake the phone while the app is closed) | ⛔ **Not built.** Needs on-device Expo push token registration, a token-storage DocType, and a server call to Expo's push API at each `notify()` call site — none of which can be meaningfully verified in this environment (same root constraint as LiveKit's voice audio: only testable on a real device). | Auth | High (next, once device-testable) |
+| Saved-search-match notifications | ⏳ Not built — needs a background/scheduled job scanning new listings against saved searches, a different mechanism than every other trigger here (all mutation side-effects) | Auth | Medium |
+| Payment notifications | ⏳ Not built — wired the moment a real Payments backend exists; `notify()` is ready to receive that call | Auth | Medium |
 
 ---
 

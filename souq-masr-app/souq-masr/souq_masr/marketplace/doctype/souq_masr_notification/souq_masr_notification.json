@@ -1,0 +1,43 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Notification",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["type", "title", "body", "reference_type", "reference_id", "is_read"],
+  "fields": [
+    {
+      "fieldname": "type",
+      "label": "Type",
+      "fieldtype": "Select",
+      "options": "ad_published\nad_promoted\nad_renewed\npayment_confirmed\nreview_received\nmessage_received\ncall_missed\njob_application_received\njob_application_status_changed\nsystem",
+      "reqd": 1,
+      "in_standard_filter": 1
+    },
+    { "fieldname": "title", "label": "Title", "fieldtype": "Data", "reqd": 1 },
+    { "fieldname": "body", "label": "Body", "fieldtype": "Small Text" },
+    { "fieldname": "reference_type", "label": "Reference Type", "fieldtype": "Select", "options": "\nlisting\nconversation\njob\napplication\nservice" },
+    { "fieldname": "reference_id", "label": "Reference Id", "fieldtype": "Data" },
+    { "fieldname": "is_read", "label": "Is Read", "fieldtype": "Check" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "write": 1 }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}

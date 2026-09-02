@@ -32,6 +32,7 @@ import type { Listing } from '@/mock/listings';
 import { getBrandsForCategory, getCategory, getChildren, getLocationPath } from '@/services/taxonomyService';
 import { getListingsByCategory, getListingsByLocation, searchListings } from '@/services/listingService';
 import { getMyConversations } from '@/services/chatService';
+import { getUnreadCount } from '@/services/notificationService';
 import { useAppStore } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
 import { useAllJobs, useAllServices } from '@/store/useJobsStore';
@@ -86,7 +87,24 @@ export default function Home() {
     };
   }, []);
   const unreadCount = mockUnreadCount + realUnreadCount;
-  const unreadNotifications = useAppStore((s) => s.notifications.filter((n) => !n.isRead).length);
+  const mockUnreadNotifications = useAppStore((s) => s.notifications.filter((n) => !n.isRead).length);
+  // Notifications vertical (Phase 2B): نفس نمط unreadCount فوق بالظبط —
+  // بنجمع العدّاد المحلي مع الحقيقي (souq_masr.api.v1.notifications).
+  const [realUnreadNotifications, setRealUnreadNotifications] = useState(0);
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const r = await getUnreadCount();
+      if (!cancelled && r.status === 'success') setRealUnreadNotifications(r.data.unread_count);
+    };
+    load();
+    const timer = setInterval(load, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+  const unreadNotifications = mockUnreadNotifications + realUnreadNotifications;
   const setOnboarding = useAppStore((s) => s.setOnboarding);
   const onboardingLocationId = useAppStore((s) => s.onboarding.locationId);
   const [searchQuery, setSearchQuery] = useState('');

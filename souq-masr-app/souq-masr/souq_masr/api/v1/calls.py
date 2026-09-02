@@ -30,6 +30,8 @@ from datetime import timedelta
 from frappe.utils import now_datetime
 from livekit import api as livekit_api
 
+from souq_masr.api.v1 import notifications
+
 # Phase 2B Slice 4B — مدة صلاحية الـtoken قصيرة عمدًا (القسم 7 من الطلب)،
 # آمن لأن LiveKit بيتحقق من الـJWT وقت الاتصال الأول بس، مش طول عمر
 # الجلسة — يعني مكالمة شغّالة فعليًا ميتقطعش لو الـtoken انتهت صلاحيته
@@ -108,6 +110,7 @@ def _resolve_stale_ringing(doc):
 	doc.ended_at = now_datetime()
 	doc.save(ignore_permissions=True)
 	_append_call_event_message(doc, "مكالمة فائتة")
+	notifications.notify(doc.callee, "call_missed", "مكالمة فائتة", "فاتتك مكالمة صوتية.", reference_type="conversation", reference_id=doc.conversation)
 	return doc
 
 
