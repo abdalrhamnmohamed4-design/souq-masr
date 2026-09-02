@@ -210,6 +210,8 @@ const en: TranslationShape = {
     filter: 'Filter',
     adsCount: '{count} ads',
     noMatches: 'No ads match these filters.',
+    loadMore: 'Load more',
+    loadMoreFailed: "Couldn't load more. Try again.",
     condition: 'Condition',
     sortLabel: 'Sort',
     alreadySaved: 'This search is already saved',

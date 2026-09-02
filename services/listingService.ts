@@ -7,15 +7,13 @@
  * الشاشات تقدر تستهلك بيانات حقيقية من غير أي تعديل UI، نفس فلسفة
  * services/taxonomyService.ts بالظبط.
  *
- * نطاق Phase 2B (شريحة عمودية واحدة بس، مش هجرة كاملة — القسم 7/8 من
- * الطلب): create_listing + get_listing متصلين بالفعل (app/post/index.tsx،
- * app/detail/[id].tsx للإعلانات الحقيقية بس). باقي الدوال هنا (update/
- * delete/pause/activate/mark_sold/get_my_listings/get_public_listings/
- * search_listings/get_listings_by_category/get_listings_by_location) —
- * الباك إند مبني ومُختبر حي بالكامل (شوف MOBILE_BACKEND_INTEGRATION_REPORT.md)
- * بس **مش متوصّلة لأي شاشة UI لسه** (myads.tsx/results.tsx لسه mock بالكامل
- * — القسم 8: "Keep mock data where real backend is not ready"). مُصدَّرة
- * هنا جاهزة للربط في الخطوة الجاية.
+ * نطاق التغطية (Slice 1 + Slice 2 مع بعض): كل الـ12 endpoint متوصّلين
+ * لشاشة UI حقيقية دلوقتي — create/get (post/index.tsx، detail/[id].tsx)،
+ * update/delete/pause/activate/mark_sold/get_my_listings
+ * (myads.tsx، post/index.tsx's edit path)، get_public_listings/
+ * search_listings/get_listings_by_category/get_listings_by_location
+ * (home.tsx، results.tsx). variants/sku لسه مش متمثّلين على الباك إند
+ * خالص — إعلان فيه variants لسه بينشر/يتعدّل محليًا بس (mock)، مش هنا.
  */
 import { frappeGet, frappePost, frappeUploadFile, type LocalFileUpload } from '@/lib/apiClient';
 import { API_BASE_URL } from '@/config/env';
@@ -61,6 +59,12 @@ type RawListing = {
   is_owner: boolean;
 };
 
+/** الحالة الحقيقية زي ما هي على الباك إند بالظبط — مش mock/listings.ts's
+ * saleStatus؟ (active|sold بس). Phase 2B Slice 2: app/(tabs)/myads.tsx
+ * محتاج يفرّق Active عن Paused فعليًا، فـgetMyListings بيرجّع النوع ده
+ * بدل ما يضغطها لـLegacy Listing type زي باقي دوال discovery. */
+export type RealListingStatus = 'Draft' | 'Active' | 'Paused' | 'Sold' | 'Rejected';
+
 type RawListingSummary = {
   id: string;
   title: string;
@@ -72,7 +76,7 @@ type RawListingSummary = {
   district: string | null;
   thumb: string | null;
   views: number;
-  status: string;
+  status: RealListingStatus;
   created_at: string;
 };
 
@@ -123,7 +127,7 @@ function adaptSeller(raw: RawSeller): Seller {
  * category.fields بتتجاب مع بعض (getCategory من services/taxonomyService.ts
  * الموجودة بالفعل، مش نداء مكرر) عشان specs تتبني بنفس تسميات الحقول
  * الحقيقية، مش attr_key الخام. */
-async function adaptListing(raw: RawListing): Promise<{ listing: Listing; seller: Seller }> {
+async function adaptListing(raw: RawListing): Promise<{ listing: Listing; seller: Seller; isOwner: boolean }> {
   const categoryResult = await getCategory(raw.category_key);
   const fields = categoryResult.status === 'success' ? categoryResult.data.fields : [];
 
@@ -166,7 +170,7 @@ async function adaptListing(raw: RawListing): Promise<{ listing: Listing; seller
     saleStatus: raw.status === 'Sold' ? 'sold' : 'active',
   };
 
-  return { listing, seller: adaptSeller(raw.seller) };
+  return { listing, seller: adaptSeller(raw.seller), isOwner: raw.is_owner };
 }
 
 function adaptSummary(raw: RawListingSummary): Listing {
@@ -190,6 +194,33 @@ function adaptSummary(raw: RawListingSummary): Listing {
     photoUris: raw.thumb ? [absoluteUrl(raw.thumb)] : undefined,
     priceType: raw.price_type,
     saleStatus: raw.status === 'Sold' ? 'sold' : 'active',
+  };
+}
+
+/** إعلاناتي (My Ads) — بديل adaptSummary's المضغوطة لـactive|sold بس.
+ * الحالة الحقيقية (Draft/Active/Paused/Sold/Rejected) لازم تفضل زي ما
+ * هي عشان app/(tabs)/myads.tsx يقدر يعرض تاب "متوقفة" حقيقي، مش يخمّن. */
+export type MyListingItem = {
+  id: string;
+  title: string;
+  price: number;
+  priceType: PriceType;
+  status: RealListingStatus;
+  thumb: string | null; // absolute URL أو null (لو الإعلان من غير صور)
+  views: number;
+  createdAt: string;
+};
+
+function adaptMyListingItem(raw: RawListingSummary): MyListingItem {
+  return {
+    id: raw.id,
+    title: raw.title,
+    price: raw.price,
+    priceType: raw.price_type,
+    status: raw.status,
+    thumb: raw.thumb ? absoluteUrl(raw.thumb) : null,
+    views: raw.views,
+    createdAt: raw.created_at,
   };
 }
 
@@ -227,7 +258,7 @@ export type CreateListingInput = {
   imageUrls: string[];
 };
 
-export async function createListing(input: CreateListingInput): Promise<ApiResult<{ listing: Listing; seller: Seller }>> {
+export async function createListing(input: CreateListingInput): Promise<ApiResult<{ listing: Listing; seller: Seller; isOwner: boolean }>> {
   const r = await frappePost<RawListing>(`${NS}.create_listing`, {
     title: input.title,
     description: input.description,
@@ -255,7 +286,7 @@ export async function createListing(input: CreateListingInput): Promise<ApiResul
 /** إعلان واحد كامل + تفاصيل التصنيف مع بعض (Promise.all + combineApiResultsTuple
  * — نفس نمط app/category/[id].tsx بالظبط) — get_listing وget_category
  * بيتجابوا مع بعض هنا، مش نداءين متتاليين. */
-export async function getListing(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller }>> {
+export async function getListing(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller; isOwner: boolean }>> {
   const r = await frappeGet<RawListing>(`${NS}.get_listing`, { listing_id: listingId });
   if (r.status !== 'success') return r;
   return { status: 'success', data: await adaptListing(r.data) };
@@ -271,14 +302,13 @@ export async function uploadListingImage(file: LocalFileUpload): Promise<ApiResu
   return { status: 'success', data: r.data.fileUrl };
 }
 
-// ---- الدوال دي مبنية ومُختبرة حي بالكامل (شوف §Phase 2B's live HTTP
-// tests) بس مش متوصّلة لأي شاشة UI في الشريحة العمودية دي — جاهزة
-// لما myads.tsx/results.tsx يتهاجروا في خطوة جاية (القسم 8 من الطلب). ----
+// ---- Phase 2B Slice 2: الدوال دي بقت متوصّلة فعليًا لـ myads.tsx
+// وpost/index.tsx's edit path — شوف MOBILE_BACKEND_INTEGRATION_REPORT.md. ----
 
 export async function updateListing(
   listingId: string,
   patch: Partial<Omit<CreateListingInput, 'attributes' | 'imageUrls'>> & { attributes?: Record<string, string>; imageUrls?: string[] },
-): Promise<ApiResult<{ listing: Listing; seller: Seller }>> {
+): Promise<ApiResult<{ listing: Listing; seller: Seller; isOwner: boolean }>> {
   const r = await frappePost<RawListing>(`${NS}.update_listing`, {
     listing_id: listingId,
     title: patch.title,
@@ -307,32 +337,37 @@ export async function deleteListing(listingId: string): Promise<ApiResult<{ dele
   return frappePost(`${NS}.delete_listing`, { listing_id: listingId });
 }
 
-export async function pauseListing(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller }>> {
+export async function pauseListing(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller; isOwner: boolean }>> {
   const r = await frappePost<RawListing>(`${NS}.pause_listing`, { listing_id: listingId });
   if (r.status !== 'success') return r;
   return { status: 'success', data: await adaptListing(r.data) };
 }
 
-export async function activateListing(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller }>> {
+export async function activateListing(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller; isOwner: boolean }>> {
   const r = await frappePost<RawListing>(`${NS}.activate_listing`, { listing_id: listingId });
   if (r.status !== 'success') return r;
   return { status: 'success', data: await adaptListing(r.data) };
 }
 
-export async function markListingSold(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller }>> {
+export async function markListingSold(listingId: string): Promise<ApiResult<{ listing: Listing; seller: Seller; isOwner: boolean }>> {
   const r = await frappePost<RawListing>(`${NS}.mark_listing_sold`, { listing_id: listingId });
   if (r.status !== 'success') return r;
   return { status: 'success', data: await adaptListing(r.data) };
 }
 
-export async function getMyListings(status?: string, page = 1, limit = 20): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
+/** newest/cheapest/priciest/mostViewed — نفس ترتيب app/results.tsx's
+ * SortKey (بدون nearest/favoritesFirst، اللي لسه client-side بس — شوف
+ * MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B Slice 2). */
+export type ListingSortKey = 'newest' | 'cheapest' | 'priciest' | 'mostViewed';
+
+export async function getMyListings(status?: RealListingStatus, page = 1, limit = 20): Promise<ApiResult<{ items: MyListingItem[]; total: number; page: number }>> {
   const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_my_listings`, { status, page, limit });
   if (r.status !== 'success') return r;
-  return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total, page: r.data.page } };
+  return { status: 'success', data: { items: r.data.items.map(adaptMyListingItem), total: r.data.total, page: r.data.page } };
 }
 
-export async function getPublicListings(page = 1, limit = 20): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
-  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_public_listings`, { page, limit });
+export async function getPublicListings(page = 1, limit = 20, sort?: ListingSortKey): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
+  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_public_listings`, { page, limit, sort });
   if (r.status !== 'success') return r;
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total, page: r.data.page } };
 }
@@ -343,6 +378,7 @@ export type SearchListingsInput = {
   condition?: Condition;
   fieldFilters?: Record<string, string>;
   cityGovernorate?: string;
+  sort?: ListingSortKey;
   page?: number;
   limit?: number;
 };
@@ -354,6 +390,7 @@ export async function searchListings(input: SearchListingsInput): Promise<ApiRes
     condition: input.condition,
     field_filters: input.fieldFilters ? JSON.stringify(input.fieldFilters) : undefined,
     city_governorate: input.cityGovernorate,
+    sort: input.sort,
     page: input.page ?? 1,
     limit: input.limit ?? 20,
   });
@@ -361,14 +398,14 @@ export async function searchListings(input: SearchListingsInput): Promise<ApiRes
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total, page: r.data.page } };
 }
 
-export async function getListingsByCategory(categoryKey: string, page = 1, limit = 20): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
-  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_listings_by_category`, { category_key: categoryKey, page, limit });
+export async function getListingsByCategory(categoryKey: string, page = 1, limit = 20, sort?: ListingSortKey): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
+  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_listings_by_category`, { category_key: categoryKey, page, limit, sort });
   if (r.status !== 'success') return r;
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total, page: r.data.page } };
 }
 
-export async function getListingsByLocation(locationKey: string, page = 1, limit = 20): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
-  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_listings_by_location`, { location_key: locationKey, page, limit });
+export async function getListingsByLocation(locationKey: string, page = 1, limit = 20, sort?: ListingSortKey): Promise<ApiResult<{ items: Listing[]; total: number; page: number }>> {
+  const r = await frappeGet<RawListPage<RawListingSummary>>(`${NS}.get_listings_by_location`, { location_key: locationKey, page, limit, sort });
   if (r.status !== 'success') return r;
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total, page: r.data.page } };
 }

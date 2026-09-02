@@ -22,7 +22,11 @@ import { buildCurrentSeller, sellers as registeredSellers, type Seller } from '@
 import type { Condition, PriceType, SellingType } from '@/mock/taxonomy';
 import type { PendingSaleConfirmation, SaleMethod, SaleRecord } from '@/types/sale';
 
-export type AdStatus = 'active' | 'pending' | 'expired' | 'sold';
+// Phase 2B Slice 2: 'pending' كانت حالة وهمية أصلًا (addMyAd's تعليق —
+// إعلانات المستخدم بتبدأ 'active' على طول، مفيش بوابة مراجعة حقيقية
+// أبدًا استخدمت 'pending') — استُبدلت بـ'paused' الحقيقية (Souq Masr
+// Listing's status الفعلي)، مش إضافة جنب حاجة موجودة.
+export type AdStatus = 'active' | 'paused' | 'expired' | 'sold';
 
 export type MyAd = {
   id: string;

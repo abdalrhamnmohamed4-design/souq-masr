@@ -1042,3 +1042,315 @@ screen not in this slice keeps working exactly as it did before this phase.
 and `results.tsx`/`home.tsx` discovery remain mock and need their own
 migration pass (backend already built/tested for all of them) before a
 whole-of-Phase-2B GO can be declared.
+
+---
+---
+
+# Phase 2B Slice 2 — My Ads, Edit, Mutations, Discovery
+
+**Scope of this section:** the second Listings vertical slice —
+`MY ADS → EDIT LISTING → UPDATE BACKEND → DISCOVERY FEEDS`. Slice 1
+(create → fetch → detail) is unmodified and still GO. Phase 2A (Taxonomy)
+untouched. Chat, Favorites (server-side), Reviews, Jobs, Services,
+Notifications, Payments, and `ProductVariant`/`sku` are **not** part of
+this slice, per explicit instruction — none of that code was touched.
+
+**This is NOT a whole-Phase-2B GO.** It covers exactly: My Ads (real
+listings shown, real mutations), Edit (real update, ownership-enforced),
+Home/Results discovery (real search/pagination/sort). Anything not listed
+in this section's scope stays exactly as Slice 1 left it.
+
+## 1. Audit performed before coding
+
+Read (not assumed) before writing anything: `MOBILE_BACKEND_INTEGRATION_REPORT.md`
+and `MOBILE_BACKEND_GAPS.md` (Slice 1 state), `services/listingService.ts`,
+`services/authService.ts`, `lib/apiClient.ts` (all as Slice 1 left them —
+unchanged since), `app/(tabs)/myads.tsx`, `app/post/index.tsx`'s edit
+hydration, `app/(tabs)/home.tsx`, `app/results.tsx`, `app/detail/[id].tsx`,
+`store/useAppStore.ts`'s listing-related state (`userListings`, `myAds`
+— a **separate**, lighter parallel record kept in sync by hand at every
+mutation point, not the same array as `userListings`), `mock/listings.ts`'s
+`Listing` type.
+
+**What the audit found that shaped the design:**
+- `myads.tsx`'s `AdStatus` (`active|pending|expired|sold`) doesn't map onto
+  the backend's `Draft|Active|Paused|Sold|Rejected`. `'pending'` was
+  already dead code — `store/useAppStore.ts`'s own `addMyAd` comment
+  confirms new ads always start `'active'`, no real review gate ever set
+  it. Replaced `'pending'` with `'paused'` (a real, reachable backend
+  status) rather than adding a 5th tab — a rename of an already-unreachable
+  slot, not new UI surface.
+- `myads.tsx` operates on `MyAd` (id/title/price/thumb/photoUri/status/
+  views/chats/favorites/expiresInDays) — a **different, lighter** shape
+  than `Listing`, with no server-side equivalent for `chats`/`favorites`
+  (Chat/Favorites domains, out of scope) or `expiresInDays` (no expiry
+  concept exists in `Souq Masr Listing` at all — listings don't auto-expire
+  server-side).
+- `app/post/index.tsx`'s edit hydration only ever looked up
+  `userListings.find(l => l.id === editId)` — a real `LST-#####` id would
+  never be found there, so editing a real listing would have silently
+  opened a blank form instead of failing loudly or working correctly.
+- `home.tsx`/`results.tsx` both derived every listing section from
+  `useDiscoverableListings()` (local `userListings` + mock seed) — zero
+  network calls for listing data.
+- `results.tsx`'s search was a single client-side `matchesQuery()` pass
+  over a haystack built from `title + description + category name (via
+  mock getPath) + city + district` — no pagination existed at all (every
+  match rendered in one unbounded `ScrollView`).
+
+## 2. Backend endpoints used / added
+
+**Used, unchanged (built + tested in Slice 1):** `create_listing`,
+`get_listing`, `delete_listing`, `pause_listing`, `activate_listing`,
+`mark_listing_sold`, `increment_listing_views`, `get_public_listings`.
+
+**Used, extended this slice** (`souq_masr/api/v1/listings.py`):
+- `update_listing` — no signature change, now actually called from a
+  mobile screen for the first time (was built+tested but unwired in
+  Slice 1).
+- `get_my_listings` — no signature change, same reason.
+- `search_listings` / `get_listings_by_category` / `get_listings_by_location`
+  — **two real additions**, not just wiring:
+  1. **`sort` param** (`newest|cheapest|priciest|mostViewed`, default
+     `newest`) — a small, safe `order_by` lookup table
+     (`_sort_order_by()`), added to all three read endpoints plus
+     `get_public_listings`. `nearest`/`favoritesFirst` (two of
+     `results.tsx`'s existing sort options) are **not** implemented
+     server-side — the first needs device coordinates the app doesn't
+     collect, the second needs the real Favorites domain (explicitly out
+     of scope) — both still sort client-side over whatever page(s) are
+     already loaded, disclosed below, not silently dropped from the UI.
+  2. **Category descendant expansion** — `search_listings`'s
+     `category_key` filter previously matched the exact category only;
+     searching "vehicles" would miss listings filed under its child
+     category "cars". Fixed by importing and calling
+     `taxonomy.get_descendant_ids()` directly (`from souq_masr.api.v1
+     import taxonomy` — a real Python import, reusing the exact same
+     already-shipped recursion Phase 2A built for the category tree, not
+     a second copy of it) and filtering `category IN (...)` instead of
+     `category = ...`. This is what makes `results.tsx`'s "search within
+     this category" behave like the old client-side `getAllDescendantIds`-
+     based version did, but computed server-side now.
+
+Both additions deployed, migrated (no schema change needed — additive
+params only), restarted, and live-tested (§5 below) before any mobile code
+was written against them.
+
+## 3. Mobile screens migrated
+
+- **`app/(tabs)/myads.tsx`** — real backend is now a first-class data
+  source, not a replacement: `displayAds` merges `getMyListings()`'s real
+  items with the still-existing local `myAds` array (Slice 1 never wrote
+  real listings into `myAds`, so there's no double-counting — a real ad
+  and a mock ad can never collide on the same id). Tabs: نشطة/متوقفة
+  (was قيد المراجعة)/منتهية/مباع. Real ads get their own action row
+  (عدّل/أوقف↔فعّل/مباع/احذف, calling `pauseListing`/`activateListing`/
+  `markListingSold`/`deleteListing`, each followed by a `refetch()` of
+  `get_my_listings` — **never** a locally-guessed status flip); mock ads
+  keep their exact original row (ميّز/جدّد/عدّل/احذف, local store actions,
+  byte-for-byte unchanged). A real Sold ad's card collapses to view-only,
+  matching the pre-existing mock-Sold visual treatment exactly (no new
+  pattern invented). `store/useAppStore.ts`'s `AdStatus` type itself
+  changed (`'pending'` → `'paused'`) — the only other file referencing it
+  was `myads.tsx` itself (checked by grep, not assumed).
+- **`app/post/index.tsx`**'s edit path — `isRealListingId(editId)` branches
+  hydration and save. Real edit: `getListing(editId)` (via `useApiResult`,
+  loading/error states via `ApiStateView`) hydrates the exact same
+  `postDraft` fields the mock path already hydrated (category, brand,
+  model, attributes, title, price, priceType, condition, sellingType,
+  description, location, photos, wholesale/discount fields) — same
+  reverse `condition`-label-to-key lookup already used for mock edits, not
+  a new mechanism. `is_owner` (now returned by `getListing()`) blocks the
+  form entirely with a plain "مش معاك صلاحية تعدّل الإعلان ده" message if
+  false — a client-side UX nicety; the real enforcement is `update_listing`'s
+  own 403, tested independently (§5). Save calls `updateListingReal()`
+  (aliased import — `updateListing` was already taken by the local Zustand
+  action) with the current image set, then `router.replace('/myads')` —
+  **same destination as the mock edit path**, no new navigation pattern.
+  Editing a listing with variants, or any mock listing, still uses the
+  exact original local `updateListing`/`updateMyAd` path, unchanged.
+- **`app/(tabs)/home.tsx`** — every listing section (latest, cheapest,
+  nearby, cars market, real-estate market) now fetches from
+  `searchListings()`/`getListingsByLocation()`/`getListingsByCategory()`,
+  each its own independent `useApiResult` call (one section failing
+  doesn't take the others down, same pattern as Phase 2A's brand-shortcut
+  rows). "Featured" stays an always-empty array with a one-line comment
+  explaining why (no real promotion system — Phase 2D) — not deleted, not
+  faked, degrades through the *existing* `featured.length > 0` gate
+  exactly like it already did for an empty mock array.
+- **`app/results.tsx`** — `searchListings()` replaces the local
+  `scopedListings`/`matchesQuery` computation entirely. 300ms debounce on
+  the search box (a real network call per keystroke would have been a
+  regression the old client-side filter never had — same debounce pattern
+  already used in `post/index.tsx`'s category search and
+  `LocationPicker.tsx`). `condition`/dynamic `fieldFilters`/category
+  scope/sort all pass straight through to the server. "Load more" (a
+  `Pressable` + spinner under the list) replaces the old unbounded
+  render-everything `ScrollView` — a real, disclosed UI addition, not a
+  redesign: the filter sheet, chips, condition/attribute options, and
+  overall screen layout are all pixel-identical to before.
+
+## 4. Mock dependencies removed vs. remaining (Section 8/11)
+
+**Removed this slice** (real backend now the *only* source, mock
+dependency fully gone for these specific data flows):
+- `home.tsx`: `mock/homeFeed.ts`'s `newestListings`/`featuredListings`/
+  `cheapestListings`/`listingsInCity`/`listingsInCategoryIds`,
+  `useDiscoverableListings()`, and the mock-scoped `getAllDescendantIds`
+  usage for car/real-estate sections (superseded by server-side category
+  expansion, §2).
+- `results.tsx`: `useDiscoverableListings()`, `matchesQuery()`,
+  `getAllDescendantIds()`/`getPath()` (both mock, previously used for
+  local scoping and search-haystack building — both no longer needed at
+  all, not replaced one-for-one, since the server now does full-text
+  search and category expansion itself).
+
+**Still mocked, explicitly, and why:**
+- `myads.tsx`: local `myAds` array is **not** deleted — still the only
+  source for pre-Slice-1 mock listings and any listing with variants
+  (which still publish/edit locally, §Slice 1). "ميّز" (promote) stays
+  local-only for every ad, real or mock — no real promotion backend
+  exists (Phase 2D). `MyAd.chats`/`.favorites` are hardcoded `0` for real
+  ads — genuinely unavailable, not guessed.
+- `app/post/index.tsx`: listings with `ProductVariant[]` still publish and
+  edit through the local/mock path entirely, unchanged from Slice 1 —
+  `Souq Masr Listing` still has no variant child table.
+- `app/results.tsx`: `savedSearches` (save/list a search criteria) is
+  still 100% local `store/useAppStore.ts` state — not part of this
+  slice's scope (no saved-search backend endpoint exists; catalogued
+  separately in `MOBILE_BACKEND_GAPS.md`'s Phase 2B table, unresolved).
+- `app/detail/[id].tsx`: unchanged from Slice 1 — favorites/chat/report
+  still local `useAppStore` actions for both real and mock listings
+  (Favorites/Chat/Reports domains, explicitly out of scope). Category
+  breadcrumb still reads `mock/taxonomy/categories.ts` (harmless, ids
+  match 1:1 by design, pre-existing condition not touched this pass
+  either).
+- Two `results.tsx` sort options (`nearest`, `favoritesFirst`) remain
+  client-side-only re-sorts of already-loaded pages, not real server
+  sorts — disclosed in §2 above, not silently degraded without
+  explanation.
+
+## 5. Live HTTP Tests
+
+All against the real, live server (`187.7.19.136`), two rounds — a direct
+raw-payload round and a second round mirroring the exact wire format
+`services/listingService.ts` sends (double-JSON-encoded `attributes`/
+`image_urls` inside the outer JSON body, `GET` with query-string params
+exactly as `frappeGet` builds them, `undefined`-valued params omitted from
+the request entirely rather than sent as `null` — the same disclosed
+mirroring methodology as every prior round, still not a literal `import`
+of the `.ts` files, for the same standalone-script reason as always).
+
+```
+=== 1. Backend additions (sort + category descendant expansion) ===
+OK  search_listings(category_key='vehicles', sort='cheapest') finds all 3
+    test listings filed under child category 'cars', ascending by price
+OK  same with sort='priciest' — descending
+OK  get_listings_by_category('vehicles') also expands to 'cars'
+
+=== 2. Full-field update, no field loss ===
+OK  create_listing (full field set)
+OK  update_listing(title only) -> every OTHER field (description, price,
+    price_type, condition, category_key, location_id, attributes,
+    governorate) byte-identical to before the update
+OK  User B cannot update User A's listing (403); GET after failed attempt
+    confirms the listing is untouched, not partially mutated
+
+=== 3. Image lifecycle (retain / remove / add / no duplication) ===
+OK  upload 2 images, set image_urls=[url1,url2] -> images=[url1,url2] (order preserved)
+OK  set image_urls=[url2] (remove url1, retain url2) -> images=[url2]
+OK  set image_urls=[url2,url1] (re-add url1) -> images=[url2,url1], no duplicate of url2
+OK  repeating the IDENTICAL update a second time -> still images=[url2,url1],
+    no accidental duplication on resubmit
+
+=== 4. get_my_listings real status ===
+OK  Active listing appears with status='Active'
+OK  after pause_listing -> get_my_listings shows status='Paused'
+OK  Paused listing does NOT appear in get_public_listings
+OK  Paused listing does NOT appear in search_listings
+OK  User B forbidden (403) on activate/pause/mark_sold/delete of User A's
+    Paused listing — all 4 mutations tested explicitly
+
+=== 5. Search ===
+OK  Arabic query ("لابتوب") matches
+OK  English query ("Dell") matches
+OK  partial query ("Dell XPS", substring) matches
+OK  special characters ("%%%'; DROP TABLE--") -> HTTP 200, no traceback,
+    no SQL error (Frappe's parameterized filters, not string-built SQL)
+OK  no-results query -> [] cleanly
+OK  category_key + q combined -> correct
+OK  city_governorate + q combined -> correct (matches in the right
+    governorate, excluded from the wrong one)
+
+=== 6. Pagination ===
+OK  5 items, limit=2 -> page 1: 2 items, page 2: 2 items, page 3: 1 item
+OK  all 5 ids across all 3 pages are unique (no duplicate across pages)
+OK  page 4 (past the end) -> [] cleanly, not an error
+
+=== 7. Views ===
+OK  two explicit increment_listing_views calls -> exactly +1 each
+    (server-side correctness of the counter itself; the mobile
+    render-vs-real-view distinction is enforced client-side by
+    app/detail/[id].tsx's `useEffect(..., [listing?.id])` dependency
+    array — verified by code review, not by a live device session, since
+    none is available in this environment; the effect only re-fires when
+    the *listing identity* changes, never on an unrelated re-render)
+
+======================================================================
+ALL SLICE 2 ASSERTIONS PASSED (round 1: 11 groups; round 2 mirror: 2 groups)
+```
+
+**Honest methodology note** (same disclosure as every prior round):
+`app/(tabs)/myads.tsx`'s merge-and-render logic, `app/post/index.tsx`'s
+real-edit hydration/save, and `app/results.tsx`'s debounced search +
+load-more have **not** been exercised inside an actual device/simulator
+session in this environment (none is available here). `tsc --noEmit` and
+`expo export` (§6) confirm the code as written compiles and bundles
+correctly; the backend contract those screens call has been independently,
+thoroughly live-tested above.
+
+## 6. Mobile Build Results
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | Clean, 0 errors |
+| `npx expo export --platform ios` | Succeeded, 1830 modules bundled, 0 errors |
+
+## 7. Bugs Found / Fixed This Slice
+
+None new in the backend logic itself. One pre-existing type/UI mismatch
+resolved by design (not a "bug" in shipped code, since Slice 1 never wired
+`myads.tsx` to real data): `AdStatus`'s `'pending'` value was already
+dead/unreachable code (confirmed via `addMyAd`'s own comment before
+touching anything) — replaced with `'paused'` rather than left alongside
+it, avoiding a 5th, confusingly-named, empty-forever tab.
+
+## 8. Blockers
+
+None.
+
+## 9. Decision
+
+# ✅ GO — for this vertical slice specifically (My Ads + Edit + Mutations + Discovery)
+
+**Not a whole-Phase-2B GO.** Scoped exactly to: real listings shown and
+mutated (pause/activate/mark-sold/delete) from `myads.tsx`; real edit
+(load, hydrate, update, ownership-enforced) from `post/index.tsx`; real
+search/discovery/pagination/sort from `home.tsx` and `results.tsx`.
+
+**Verified:** `tsc`/`expo export` clean; full endpoint contract for this
+slice live-tested (update field-preservation, image lifecycle, status
+visibility, ownership on all 4 real mutations, search variants, category
+descendant expansion, pagination, views) across two mirrored rounds;
+Sold/Paused/Draft listings confirmed absent from every public-facing
+endpoint; no traceback on any tested path including a SQL-injection-shaped
+query string.
+
+**Still mocked, unchanged, explicitly out of scope** (§4): variants/sku,
+saved searches, favorites/chat/reports (any listing), promotion
+("featured"), `nearest`/`favoritesFirst` sort (client-side only). None of
+these were silently dropped — each is named here and in
+`MOBILE_BACKEND_GAPS.md`.
+
+**No Chat/Favorites/Reviews/Jobs/Services/Notifications/Payments code was
+touched.** No Phase 2A regression. No mock data deleted globally.

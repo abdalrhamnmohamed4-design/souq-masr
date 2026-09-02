@@ -33,7 +33,14 @@ import {
   searchCategories,
 } from '@/services/taxonomyService';
 import { ensureCredentials } from '@/services/authService';
-import { createListing, uploadListingImage } from '@/services/listingService';
+import {
+  createListing,
+  getListing as getListingReal,
+  isRealListingId,
+  updateListing as updateListingReal,
+  uploadListingImage,
+} from '@/services/listingService';
+import { API_BASE_URL } from '@/config/env';
 import { LocationPicker } from '@/components/LocationPicker';
 import {
   CONDITION_LABELS,
@@ -62,7 +69,25 @@ export default function PostAd() {
   // تعديل إعلان موجود (PART QA-fix): قبل كده زرار "عدّل" كان بيفتح
   // فورم فاضي وبينشئ إعلان مكرر جديد بدل ما يعدّل الأصلي. دلوقتي بنحمّل
   // بيانات الإعلان الحقيقية في postDraft أول ما الشاشة تفتح بـeditId.
-  const editingListing = editId ? userListings.find((l) => l.id === editId) : undefined;
+  //
+  // Phase 2B Slice 2: editId ممكن يبقى إعلان حقيقي (LST-#####) أو mock
+  // قديم — isRealEditId بيحدد المصدر؛ الشاشة نفسها UI واحد بس مصدر
+  // البيانات (وبعدين وجهة الحفظ) بيختلف حسبه.
+  const isRealEditId = !!editId && isRealListingId(editId);
+  const mockEditingListing = editId && !isRealEditId ? userListings.find((l) => l.id === editId) : undefined;
+
+  const { state: realEditState } = useApiResult(
+    () => (isRealEditId && editId ? getListingReal(editId) : Promise.resolve({ status: 'success' as const, data: null })),
+    [editId, isRealEditId],
+  );
+  const realEditingListing = realEditState.kind === 'success' ? realEditState.data : undefined;
+  // مش صاحب الإعلان الحقيقي ده — بنمنع التعديل من واجهة الموبايل هنا
+  // كتحسين UX، بس الإنفاذ الحقيقي (403) موجود على السيرفر نفسه بغض
+  // النظر (update_listing's _assert_owner) — نفس مبدأ "server enforces,
+  // UI doesn't just hide" المتّبع في كل حاجة تانية بالمشروع.
+  const editForbidden = isRealEditId && realEditState.kind === 'success' && realEditingListing && !realEditingListing.isOwner;
+
+  const editingListing = mockEditingListing ?? realEditingListing?.listing;
   const [hydrated, setHydrated] = useState(!editId);
 
   React.useEffect(() => {
@@ -70,32 +95,36 @@ export default function PostAd() {
       resetPostDraft();
       return;
     }
-    if (editingListing && !hydrated) {
+    if (hydrated) return;
+    if (editForbidden) return; // هيتعرض تحذير بدل الفورم — مفيش داعي نحمّل بيانات مستخدم تاني
+
+    const source = mockEditingListing ?? realEditingListing?.listing;
+    if (source) {
       const conditionKey =
-        (Object.keys(CONDITION_LABELS) as Condition[]).find((k) => CONDITION_LABELS[k] === editingListing.condition) ?? null;
+        (Object.keys(CONDITION_LABELS) as Condition[]).find((k) => CONDITION_LABELS[k] === source.condition) ?? null;
       setPostDraft({
-        categoryKey: editingListing.categoryKey,
-        brandId: editingListing.brandId ?? null,
-        modelId: editingListing.modelId ?? null,
-        attributes: editingListing.attributes ?? {},
-        title: editingListing.title,
-        price: editingListing.priceType === 'free' || editingListing.priceType === 'contact' ? '' : String(editingListing.price || ''),
-        priceType: editingListing.priceType ?? 'negotiable',
+        categoryKey: source.categoryKey,
+        brandId: source.brandId ?? null,
+        modelId: source.modelId ?? null,
+        attributes: source.attributes ?? {},
+        title: source.title,
+        price: source.priceType === 'free' || source.priceType === 'contact' ? '' : String(source.price || ''),
+        priceType: source.priceType ?? 'negotiable',
         condition: conditionKey,
-        sellingType: editingListing.sellingType ?? null,
-        description: editingListing.description,
-        locationId: editingListing.locationId ?? null,
-        photoUris: editingListing.photoUris ?? [],
-        variants: editingListing.variants ?? [],
-        wholesalePrice: editingListing.wholesalePrice ? String(editingListing.wholesalePrice) : '',
-        minWholesaleQty: editingListing.minWholesaleQty ? String(editingListing.minWholesaleQty) : '',
-        discountPrice: editingListing.discountPrice ? String(editingListing.discountPrice) : '',
-        discountEndsAt: editingListing.discountEndsAt ?? null,
+        sellingType: source.sellingType ?? null,
+        description: source.description,
+        locationId: source.locationId ?? null,
+        photoUris: source.photoUris ?? [],
+        variants: source.variants ?? [],
+        wholesalePrice: source.wholesalePrice ? String(source.wholesalePrice) : '',
+        minWholesaleQty: source.minWholesaleQty ? String(source.minWholesaleQty) : '',
+        discountPrice: source.discountPrice ? String(source.discountPrice) : '',
+        discountEndsAt: source.discountEndsAt ?? null,
       });
       setHydrated(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editId, editingListing, hydrated]);
+  }, [editId, mockEditingListing, realEditingListing, editForbidden, hydrated]);
 
   // Phase 2A: تفاصيل التصنيف الكاملة (fields/hasBrands/allowedConditions...)
   // بقت بتيجي من الباك إند الحقيقي عبر getCategory غير المتزامنة، مش
@@ -222,11 +251,66 @@ export default function PostAd() {
       discountEndsAt: postDraft.discountPrice ? postDraft.discountEndsAt ?? undefined : undefined,
     };
 
+    if (isRealEditId && editId) {
+      // تعديل حقيقي: بيحدّث نفس سجل LST-##### على السيرفر — مفيش إعلان
+      // جديد بيتنشأ. الملكية بتتأكّد سيرفر-side (403 لو مش صاحبه)، مش
+      // بس بإخفاء الفورم هنا (editForbidden بس تحسين UX).
+      setPublishing(true);
+      try {
+        const imageUrls: string[] = [];
+        for (const uri of postDraft.photoUris) {
+          if (API_BASE_URL && uri.startsWith(API_BASE_URL)) {
+            // صورة موجودة بالفعل على السيرفر (من الإعلان الأصلي) — بنرجّعها
+            // لشكلها النسبي زي ما File.file_url متخزّن، مش نرفعها تاني.
+            imageUrls.push(uri.slice(API_BASE_URL.length));
+          } else {
+            const uploadResult = await uploadListingImage({ uri, name: uri.split('/').pop() || `photo-${Date.now()}.jpg`, mimeType: 'image/jpeg' });
+            if (uploadResult.status !== 'success') {
+              Alert.alert('تعذّر رفع الصور', publishErrorMessage(uploadResult.status));
+              return;
+            }
+            imageUrls.push(uploadResult.data);
+          }
+        }
+
+        const updateResult = await updateListingReal(editId, {
+          title: postDraft.title,
+          description: postDraft.description,
+          category: category.id,
+          location: postDraft.locationId!,
+          price: priceNum,
+          priceType: postDraft.priceType,
+          brand: postDraft.brandId,
+          model: postDraft.modelId,
+          sellingType: postDraft.sellingType,
+          condition: postDraft.condition,
+          wholesalePrice: toPositiveInt(postDraft.wholesalePrice) ?? null,
+          minWholesaleQty: toPositiveInt(postDraft.minWholesaleQty) ?? null,
+          discountPrice: toPositiveInt(postDraft.discountPrice) ?? null,
+          discountEndsAt: postDraft.discountPrice ? postDraft.discountEndsAt : null,
+          attributes: postDraft.attributes,
+          imageUrls,
+        });
+
+        if (updateResult.status !== 'success') {
+          Alert.alert('تعذّر حفظ التعديلات', publishErrorMessage(updateResult.status));
+          return;
+        }
+
+        resetPostDraft();
+        setStepIndex(0);
+        router.replace('/myads');
+      } finally {
+        setPublishing(false);
+      }
+      return;
+    }
+
     if (editingListing) {
-      // تعديل حقيقي: بيحدّث نفس السجل (userListings + myAds) بنفس الـid،
-      // مش بينشئ إعلان جديد مكرر — وبيحافظ على views/postedAt/isFeatured.
-      // لسه محلي بالكامل (update_listing الحقيقي مبني ومُختبر حي، بس مش
-      // متوصّل لتعديل من الشاشة دي في الشريحة العمودية دي — القسم 8).
+      // تعديل محلي (mock) — إعلان لسه من قبل ما endpoint الحقيقي يتبني،
+      // أو إعلان بمقاسات/ألوان (variants مش ممثّلة على الباك إند الحقيقي
+      // لسه). بيحدّث نفس السجل (userListings + myAds) بنفس الـid، مش
+      // بينشئ إعلان جديد مكرر — وبيحافظ على views/postedAt/isFeatured.
       updateListing(editingListing.id, patch);
       updateMyAd(editingListing.id, { title: patch.title, price: patch.price, photoUri: patch.photoUris?.[0] });
       resetPostDraft();
@@ -304,6 +388,24 @@ export default function PostAd() {
       setPublishing(false);
     }
   });
+
+  if (isRealEditId && realEditState.kind !== 'success') {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.paper, justifyContent: 'center' }}>
+        <ApiStateView state={realEditState} />
+      </View>
+    );
+  }
+  if (editForbidden) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.s5 }}>
+        <Text style={{ fontSize: 13, color: colors.ink3, textAlign: 'center' }}>مش معاك صلاحية تعدّل الإعلان ده.</Text>
+        <View style={{ marginTop: spacing.s4, width: 140 }}>
+          <Button variant="ghost" onPress={() => router.back()}>رجوع</Button>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.paper }}>

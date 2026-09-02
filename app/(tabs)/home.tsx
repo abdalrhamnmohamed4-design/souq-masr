@@ -4,11 +4,12 @@
  * فضل الكبسولة الزجاجية العائمة بتاعتنا (مش شريط التصميم الجديد المسطّح)
  * لأن ده قرار تصميم قائم للتطبيق كله.
  *
- * مفيش أي بيانات وهمية هنا: كل قسم إعلانات بيتحسب لحظيًا من
- * useAllListings() (اللي دلوقتي = إعلانات المستخدم الحقيقية بس، لحد ما
- * يتوصّل باك إند). الأقسام اللي محتاجة بيانات مش متاحة محليًا بأمانة
- * (سعر سوق مجمّع، بائعين موثوقين من مستخدمين تانيين، إعلانات مموّلة)
- * اتشالت بدل ما تتلفّق — هترجع لما يبقى فيه باك إند بيوفّرها فعليًا.
+ * Phase 2B Slice 2: كل أقسام الإعلانات هنا بقت من الباك إند الحقيقي
+ * (search_listings/get_listings_by_category/get_listings_by_location —
+ * Active بس، مفيش Paused/Sold/Draft بيسرّب هنا خالص). "الأقسام اللي
+ * محتاجة بيانات مش متاحة بأمانة" لسه المبدأ نفسه: "إعلانات مميّزة"
+ * دايمًا فاضية (مفيش نظام تمييز حقيقي على السيرفر لسه — Phase 2D)، مش
+ * ملفّقة بقيمة وهمية.
  */
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -25,16 +26,11 @@ import { EmptyState } from '@/components/primitives/EmptyState';
 import { ThumbPlaceholder } from '@/components/primitives/ThumbPlaceholder';
 import { combineApiResultList, useApiResult } from '@/hooks/useApiResult';
 import { useT } from '@/i18n';
-import {
-  cheapestListings,
-  featuredListings,
-  listingsInCategoryIds,
-  listingsInCity,
-  newestListings,
-} from '@/mock/homeFeed';
-import { categoryLabel, getAllDescendantIds } from '@/mock/taxonomy/categories';
+import { categoryLabel } from '@/mock/taxonomy/categories';
+import type { Listing } from '@/mock/listings';
 import { getBrandsForCategory, getCategory, getChildren, getLocationPath } from '@/services/taxonomyService';
-import { useAppStore, useDiscoverableListings } from '@/store/useAppStore';
+import { getListingsByCategory, getListingsByLocation, searchListings } from '@/services/listingService';
+import { useAppStore } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
 import { useAllJobs, useAllServices } from '@/store/useJobsStore';
 import { useRequireAuth } from '@/lib/auth';
@@ -69,7 +65,6 @@ export default function Home() {
   const city = useAppStore((s) => s.onboarding.city);
   const unreadCount = useAppStore((s) => s.conversations.reduce((sum, c) => sum + c.unread, 0));
   const unreadNotifications = useAppStore((s) => s.notifications.filter((n) => !n.isRead).length);
-  const allListings = useDiscoverableListings();
   const setOnboarding = useAppStore((s) => s.setOnboarding);
   const onboardingLocationId = useAppStore((s) => s.onboarding.locationId);
   const [searchQuery, setSearchQuery] = useState('');
@@ -77,17 +72,39 @@ export default function Home() {
 
   const goDetail = (id: string) => router.push(`/detail/${id}`);
 
-  const newest = newestListings(allListings);
-  const featured = featuredListings(allListings);
-  const cheapest = cheapestListings(allListings);
-  const nearby = listingsInCity(allListings, city);
-  // الإعلانات لسه محلية (mock) لحد Phase 2B — التصنيفات بس بقت حقيقية من
-  // Phase 2A، بس getAllDescendantIds فاضلة تقرا من mock/taxonomy لأن دي
-  // بتخدم فلترة الإعلانات المحلية بس، ونفس الـid بين mock والباك إند
-  // مطابق حرفيًا (نفس التصميم من الأول) — شوف
-  // MOBILE_BACKEND_INTEGRATION_REPORT.md.
-  const carListings = listingsInCategoryIds(allListings, getAllDescendantIds(CAR_CATEGORY_ID));
-  const realEstateListings = listingsInCategoryIds(allListings, getAllDescendantIds(REAL_ESTATE_PARENT_ID));
+  // ============ Phase 2B Slice 2: أقسام الإعلانات من الباك إند الحقيقي ============
+  // كل نداء مستقل بـuseApiResult خاصة بيه — فشل قسم واحد (شبكة/سيرفر)
+  // مبيوقفش الباقي، ونفس نمط الفشل-الهادئ المتّبع في تصنيفات Phase 2A
+  // (براندات محلية/أنواع عقارات) بالظبط.
+  const { state: newestState, refetch: refetchNewest } = useApiResult(
+    () => searchListings({ sort: 'newest', limit: 10 }),
+    [],
+  );
+  const newest = newestState.kind === 'success' ? newestState.data.items : [];
+  const totalActiveListings = newestState.kind === 'success' ? newestState.data.total : 0;
+
+  // مفيش نظام تمييز (Featured) حقيقي متصل على السيرفر لسه (Phase 2D) —
+  // القسم ده فاضي بأمانة دايمًا، مش بيانات وهمية بديلة.
+  const featured: Listing[] = [];
+
+  const { state: cheapestState } = useApiResult(() => searchListings({ sort: 'cheapest', limit: 10 }), []);
+  const cheapest = cheapestState.kind === 'success' ? cheapestState.data.items : [];
+
+  const { state: nearbyState } = useApiResult(
+    () =>
+      onboardingLocationId
+        ? getListingsByLocation(onboardingLocationId, 1, 10)
+        : Promise.resolve({ status: 'success' as const, data: { items: [] as Listing[], total: 0, page: 1 } }),
+    [onboardingLocationId],
+  );
+  const nearby = nearbyState.kind === 'success' ? nearbyState.data.items : [];
+
+  const { state: carListingsState } = useApiResult(() => getListingsByCategory(CAR_CATEGORY_ID, 1, 10), []);
+  const carListings = carListingsState.kind === 'success' ? carListingsState.data.items : [];
+
+  const { state: realEstateListingsState } = useApiResult(() => getListingsByCategory(REAL_ESTATE_PARENT_ID, 1, 10), []);
+  const realEstateListings = realEstateListingsState.kind === 'success' ? realEstateListingsState.data.items : [];
+
   const publishedJobsCount = useAllJobs().filter((j) => j.status === 'published').length;
   const activeServicesCount = useAllServices().filter((s) => s.status === 'active').length;
 
@@ -236,8 +253,12 @@ export default function Home() {
         </Pressable>
       </View>
 
-      {/* ============ إعلانات حقيقية أو حالة فاضية موحّدة ============ */}
-      {allListings.length === 0 ? (
+      {/* ============ إعلانات حقيقية أو حالة فاضية/تحميل/خطأ موحّدة ============ */}
+      {newestState.kind !== 'success' ? (
+        <View style={{ marginTop: spacing.s4 }}>
+          <ApiStateView state={newestState} onRetry={refetchNewest} />
+        </View>
+      ) : totalActiveListings === 0 ? (
         <View style={{ marginTop: spacing.s4 }}>
           <EmptyState
             icon={<Icon name="box" color={colors.ink3} size={26} />}
@@ -249,7 +270,7 @@ export default function Home() {
         </View>
       ) : (
         <>
-          <SectionHead title={t('home.latestAds')} sub={t('home.adsCount', { count: allListings.length })} moreLabel={t('home.all')} onMore={() => router.push('/results')} />
+          <SectionHead title={t('home.latestAds')} sub={t('home.adsCount', { count: totalActiveListings })} moreLabel={t('home.all')} onMore={() => router.push('/results')} />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: spacing.s4, alignItems: 'flex-start' }}>
             {newest.map((l) => (
               <MiniCard key={l.id} onPress={() => goDetail(l.id)} thumb={l.thumb} photoUri={l.photoUris?.[0]} title={l.title} price={l.price} priceSuffix={l.priceSuffix} meta={`${l.city} · ${l.postedAt}`} onFav={() => requireAuth(() => toggleFav(l.id), { type: 'favorite_listing', listingId: l.id })} fav={isFav(l.id)} />
@@ -441,7 +462,7 @@ function SubMarket({
   icon: IconName;
   title: string;
   chips: string[];
-  listings: ReturnType<typeof useDiscoverableListings>;
+  listings: Listing[];
   onMore: () => void;
   goDetail: (id: string) => void;
 }) {

@@ -212,6 +212,8 @@ const ar = {
     filter: 'فلترة',
     adsCount: '{count} إعلان',
     noMatches: 'مفيش إعلانات مطابقة للفلاتر دي.',
+    loadMore: 'عرض المزيد',
+    loadMoreFailed: 'تعذّر تحميل المزيد. حاول تاني.',
     condition: 'الحالة',
     sortLabel: 'الترتيب',
     alreadySaved: 'المعيار ده متحفظ بالفعل',

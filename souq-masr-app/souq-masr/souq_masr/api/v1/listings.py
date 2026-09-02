@@ -22,9 +22,23 @@ import json
 import frappe
 from frappe.utils import cint, flt
 
+# إعادة استخدام حقيقي لمنطق الشجرة الموجود بالفعل (get_descendant_ids) —
+# مش نسخة تانية من نفس المنطق. Phase 2B Slice 2: search_listings/
+# get_listings_by_category محتاجين "التصنيف ده وكل فروعه" مش تطابق حرفي
+# بس (نفس فكرة app/results.tsx's القديمة اللي كانت بتعمل الحساب ده محليًا
+# عن طريق mock/taxonomy/categories.ts's getAllDescendantIds).
+from souq_masr.api.v1 import taxonomy
+
 PUBLIC_STATUSES = ("Active", "Paused", "Sold")
 PAGE_SIZE_DEFAULT = 20
 PAGE_SIZE_MAX = 50
+
+SORT_ORDER_BY = {
+	"newest": "creation desc",
+	"cheapest": "price asc",
+	"priciest": "price desc",
+	"mostViewed": "views desc",
+}
 
 
 # ============================================================ helpers
@@ -183,6 +197,22 @@ def _paginate(page, limit):
 	if page < 1:
 		page = 1
 	return page, limit, (page - 1) * limit
+
+
+def _sort_order_by(sort):
+	"""'newest'|'cheapest'|'priciest'|'mostViewed' — قيمة غير معروفة أو
+	فاضية بترجع لـnewest بأمان (نفس افتراضي app/results.tsx's SortKey).
+	'nearest'/'favoritesFirst' (مطلوبين في results.tsx) مش هنا عمدًا —
+	الأول محتاج إحداثيات جهاز مش متجمّعة، والتاني محتاج نظام Favorites
+	حقيقي على السيرفر (خارج نطاق الـslice دي بالكامل) — الاتنين لسه
+	بيترتّبوا client-side على الصفحة الحالية بس، موثّق في التقرير."""
+	return SORT_ORDER_BY.get(sort, SORT_ORDER_BY["newest"])
+
+
+def _expand_category(category_key):
+	"""التصنيف ده + كل فروعه — إعادة استخدام taxonomy.get_descendant_ids
+	مباشرة (نداء Python عادي، مش HTTP) بدل ما نعيد كتابة نفس المنطق."""
+	return taxonomy.get_descendant_ids(category_key)
 
 
 # ============================================================ mutations (auth required)
@@ -397,7 +427,7 @@ def get_listing(listing_id):
 
 
 @frappe.whitelist(allow_guest=True)
-def get_public_listings(page=1, limit=PAGE_SIZE_DEFAULT):
+def get_public_listings(page=1, limit=PAGE_SIZE_DEFAULT, sort=None):
 	page, limit, offset = _paginate(page, limit)
 	filters = {"status": "Active"}
 	total = frappe.db.count("Souq Masr Listing", filters)
@@ -405,7 +435,7 @@ def get_public_listings(page=1, limit=PAGE_SIZE_DEFAULT):
 		"Souq Masr Listing",
 		filters=filters,
 		fields=["name", "title", "price", "price_type", "condition", "category", "location", "views", "status", "creation"],
-		order_by="creation desc",
+		order_by=_sort_order_by(sort),
 		limit_start=offset,
 		limit_page_length=limit,
 	)
@@ -413,9 +443,10 @@ def get_public_listings(page=1, limit=PAGE_SIZE_DEFAULT):
 
 
 @frappe.whitelist(allow_guest=True)
-def search_listings(q=None, category_key=None, condition=None, field_filters=None, city_governorate=None, page=1, limit=PAGE_SIZE_DEFAULT):
-	"""مطابق لروح results.tsx's الحالي: بحث نصي + تصنيف + حالة + فلاتر
-	ديناميكية (attributes) + محافظة، كلهم اختياريين ومجتمعين مع بعض."""
+def search_listings(q=None, category_key=None, condition=None, field_filters=None, city_governorate=None, sort=None, page=1, limit=PAGE_SIZE_DEFAULT):
+	"""مطابق لروح app/results.tsx's الحالي: بحث نصي + تصنيف (+ كل فروعه) +
+	حالة + فلاتر ديناميكية (attributes) + محافظة + ترتيب، كلهم اختياريين
+	ومجتمعين مع بعض."""
 	page, limit, offset = _paginate(page, limit)
 	listing_names = None
 	parsed_field_filters = _parse_json_param(field_filters) or {}
@@ -434,7 +465,10 @@ def search_listings(q=None, category_key=None, condition=None, field_filters=Non
 
 	base_filters = {"status": "Active"}
 	if category_key:
-		base_filters["category"] = category_key
+		# التصنيف ده + كل فروعه — بحث في "سيارات" لازم يرجّع نتايج من
+		# "سيدان"/"دفع رباعي"... مش بس تطابق حرفي، زي results.tsx's
+		# getAllDescendantIds المحلية القديمة بالظبط (بس من السيرفر دلوقتي).
+		base_filters["category"] = ["in", _expand_category(category_key)]
 	if condition:
 		base_filters["condition"] = condition
 	if listing_names is not None:
@@ -461,7 +495,7 @@ def search_listings(q=None, category_key=None, condition=None, field_filters=Non
 		filters=base_filters,
 		or_filters=or_filters,
 		fields=["name", "title", "price", "price_type", "condition", "category", "location", "views", "status", "creation"],
-		order_by="creation desc",
+		order_by=_sort_order_by(sort),
 		limit_start=offset,
 		limit_page_length=limit,
 	)
@@ -477,12 +511,12 @@ def _location_and_descendants(location_key):
 
 
 @frappe.whitelist(allow_guest=True)
-def get_listings_by_category(category_key, page=1, limit=PAGE_SIZE_DEFAULT):
-	return search_listings(category_key=category_key, page=page, limit=limit)
+def get_listings_by_category(category_key, page=1, limit=PAGE_SIZE_DEFAULT, sort=None):
+	return search_listings(category_key=category_key, page=page, limit=limit, sort=sort)
 
 
 @frappe.whitelist(allow_guest=True)
-def get_listings_by_location(location_key, page=1, limit=PAGE_SIZE_DEFAULT):
+def get_listings_by_location(location_key, page=1, limit=PAGE_SIZE_DEFAULT, sort=None):
 	page, limit, offset = _paginate(page, limit)
 	ids = _location_and_descendants(location_key)
 	filters = {"status": "Active", "location": ["in", ids]}
@@ -491,7 +525,7 @@ def get_listings_by_location(location_key, page=1, limit=PAGE_SIZE_DEFAULT):
 		"Souq Masr Listing",
 		filters=filters,
 		fields=["name", "title", "price", "price_type", "condition", "category", "location", "views", "status", "creation"],
-		order_by="creation desc",
+		order_by=_sort_order_by(sort),
 		limit_start=offset,
 		limit_page_length=limit,
 	)

@@ -8,7 +8,7 @@ which currently contains exactly two API modules:
 souq_masr/api/v1/app_config.py   — app version/force-update check (integrated, StartupGate)
 souq_masr/api/v1/taxonomy.py     — 12 endpoints (integrated, Phase 2A COMPLETE)
 souq_masr/api/v1/auth.py         — 1 endpoint: signin (integrated, Phase 2B — see MOBILE_BACKEND_INTEGRATION_REPORT.md)
-souq_masr/api/v1/listings.py     — 12 endpoints (built + live-tested, Phase 2B — only create_listing/get_listing are wired into a mobile screen so far; see MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B section for exactly which ones)
+souq_masr/api/v1/listings.py     — 12 endpoints (built + live-tested, Phase 2B Slice 1+2 — 11 of 12 now wired into a mobile screen; see MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B sections for exactly which ones)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -59,18 +59,20 @@ was closed, per this doc's own "don't fake it, document it" convention.
 
 ## Phase 2B — Public listings / search / filters / seller profile
 
-**Update:** listing search/discovery/detail endpoints are now **built and
-live-tested** (`souq_masr.api.v1.listings.*` — see
-`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B section). What's left
-below is genuinely not built yet, or built-but-not-wired-to-a-screen
-(marked explicitly which is which).
+**Update (Slice 2):** search/discovery is now **built, live-tested, AND
+wired** into both `results.tsx` and `home.tsx` — see
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B Slice 2 section. Also
+added this slice: server-side `sort` (newest/cheapest/priciest/mostViewed)
+and category-descendant expansion for `search_listings`/
+`get_listings_by_category` (previously exact-match only). What's left
+below is genuinely not built yet.
 
 | Feature | Status | Auth | Priority |
 |---|---|---|---|
-| List/search listings (`app/results.tsx`) | ✅ Backend built+tested (`search_listings` — `q, category_key, condition, field_filters, city_governorate, page, limit`). ⏳ **Not wired into `results.tsx`** — still 100% local `useDiscoverableListings`. | Guest | High |
-| Listing detail (`app/detail/[id].tsx`) | ✅ Backend built+tested (`get_listing`). ✅ **Wired** — real listings (`LST-#####` ids) fetch from the backend; local ids unchanged. | Guest | Done for real listings |
-| Listing discovery by category/location (`app/(tabs)/home.tsx`) | ✅ Backend built+tested (`get_listings_by_category`, `get_listings_by_location`). ⏳ Not wired — `home.tsx`'s listing sections still local. | Guest | High |
-| Seller public profile (`app/seller/[id].tsx`) | ⏳ **Not built.** `get_listing`/`get_public_listings` embed minimal seller display fields (name/phone/member-since/ads-count) directly in the listing response as a pragmatic substitute for this slice, but there's still no standalone seller-profile endpoint (reviews, full ad history, etc.) | Guest | High |
+| List/search listings (`app/results.tsx`) | ✅ Backend built+tested (`search_listings` — `q, category_key, condition, field_filters, city_governorate, sort, page, limit`). ✅ **Wired**, incl. debounced search + "load more" pagination. `nearest`/`favoritesFirst` sort remain client-side-only (need device geo / real Favorites, both out of scope). | Guest | Done for this slice |
+| Listing detail (`app/detail/[id].tsx`) | ✅ Backend built+tested (`get_listing`). ✅ **Wired** — real listings (`LST-#####` ids) fetch from the backend; local ids unchanged. | Guest | Done |
+| Listing discovery by category/location (`app/(tabs)/home.tsx`) | ✅ Backend built+tested (`get_listings_by_category`, `get_listings_by_location`). ✅ **Wired** — every home listing section (latest/cheapest/nearby/cars/real-estate) is real now; "featured" stays honestly empty (no promotion system). | Guest | Done for this slice |
+| Seller public profile (`app/seller/[id].tsx`) | ⏳ **Not built.** `get_listing`/`get_public_listings` embed minimal seller display fields (name/phone/member-since/ads-count) directly in the listing response as a pragmatic substitute, but there's still no standalone seller-profile endpoint (reviews, full ad history, etc.) | Guest | High |
 | Increment view count | ✅ Backend built+tested+wired (`increment_listing_views`, called from `app/detail/[id].tsx` for real listings) | Guest | Done |
 | Saved searches sync (`store`'s `savedSearches`) | ⏳ Not built | **Auth** | Medium |
 
@@ -111,22 +113,18 @@ Phase 2B. `users.me`/`users.update`/social sign-in remain unbuilt.
 
 ## Phase 2F — Listing creation / edit / images
 
-**Update:** all 5 rows below are now **built and live-tested** backend-side
-(`souq_masr.api.v1.listings.*` — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s
-Phase 2B section, including full ownership/security test results). Only
-`create_listing` is wired into a mobile screen this pass — the rest are
-ready for the next Phase 2B step (wiring `myads.tsx`'s edit/delete/pause/
-activate/mark-sold actions to the real endpoints instead of local-only
-`updateListing`/`removeMyAd`).
+**Update (Slice 2):** every row below is now **built, live-tested, AND
+wired** except marking a listing sold via the chat flow specifically —
+see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B sections.
 
 | Feature | Status | Auth | Priority |
 |---|---|---|---|
-| Create listing | ✅ Built, tested, **wired** — `app/post/index.tsx`'s `publish()` (new, variant-free listings only; edits and listings-with-variants still local, disclosed in the integration report) | Auth | Done for this slice |
-| Edit listing | ✅ Backend built+tested (`update_listing`, partial-patch). ⏳ Not wired — `post/index.tsx`'s edit path still local-only | Auth (owner only) | High |
-| Delete listing | ✅ Backend built+tested (`delete_listing`). ⏳ Not wired to `myads.tsx` | Auth (owner only) | High |
-| Pause / activate listing | ✅ Backend built+tested (`pause_listing`/`activate_listing`, with status-transition validation). ⏳ Not wired to any screen (no UI for this exists in `myads.tsx` yet either — new UI, not just new wiring) | Auth (owner only) | Medium |
-| Upload image(s) | ✅ Wired — Frappe's standard `/api/method/upload_file`, called from `app/post/index.tsx`'s publish flow (`services/listingService.ts`'s `uploadListingImage`), `is_private=0`, ownership-checked on attach | Auth | Done |
-| Mark as sold | ✅ Backend built+tested (`mark_listing_sold`). ⏳ Not wired — the mobile app's existing chat-based `confirmListingSold()` flow (`store/useAppStore.ts`) still only updates the local mock store; connecting it to the real endpoint needs Chat itself to be real first (Phase 2E), since the trigger lives inside a chat message today | Auth (owner only) | Medium |
+| Create listing | ✅ Built, tested, **wired** — `app/post/index.tsx`'s `publish()` (new, variant-free listings only; edits and listings-with-variants still local, disclosed in the integration report) | Auth | Done |
+| Edit listing | ✅ Built, tested, **wired** — `post/index.tsx`'s edit path (`update_listing`, partial-patch, ownership-enforced both client-side (`isOwner` check) and server-side) | Auth (owner only) | Done |
+| Delete listing | ✅ Built, tested, **wired** — `app/(tabs)/myads.tsx`'s "احذف" action for real listings | Auth (owner only) | Done |
+| Pause / activate listing | ✅ Built, tested, **wired** — `myads.tsx`'s "أوقف"/"فعّل" actions (new UI added to the existing action-row pattern, not a redesign) | Auth (owner only) | Done |
+| Upload image(s) | ✅ Wired — Frappe's standard `/api/method/upload_file`, called from both create and edit flows (`services/listingService.ts`'s `uploadListingImage`), `is_private=0`, ownership-checked on attach, retain/remove/add all live-tested with no duplication | Auth | Done |
+| Mark as sold | ✅ Backend built+tested (`mark_listing_sold`), **wired** in `myads.tsx` (a direct "مباع" button, confirmed via Alert). ⏳ The mobile app's **existing chat-based** `confirmListingSold()` flow (`store/useAppStore.ts`) still only updates the local mock store — connecting *that specific trigger* to the real endpoint needs Chat itself to be real first (Phase 2E), since it lives inside a chat message | Auth (owner only) | Chat-triggered path: Medium |
 
 ---
 

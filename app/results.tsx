@@ -8,8 +8,8 @@
  * مش الـstate/المقارنات الداخلية (lib/i18n وقت التبديل).
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
@@ -17,19 +17,18 @@ import { RowCard } from '@/components/listing/RowCard';
 import { Button } from '@/components/primitives/Button';
 import { useApiResult } from '@/hooks/useApiResult';
 import { useT } from '@/i18n';
-import { useAppStore, useDiscoverableListings } from '@/store/useAppStore';
+import { useAppStore } from '@/store/useAppStore';
 import { useLanguageStore } from '@/store/useLanguageStore';
+import type { Listing } from '@/mock/listings';
 // categoryLabel/fieldLabel: منتقيات تسمية بس بتشتغل على كائن Category/
-// CategoryField اتجاب فعلًا (مش نداء بيانات) — فاضلين هنا. getAllDescendantIds
-// وgetPath(l.categoryKey) هنا لسه من mock عمدًا: بيتستخدموا في نطاق فلترة
-// الإعلانات المحلية (Listings لسه mock بالكامل، Phase 2B) مش لعرض بيانات
-// تصنيف حقيقية — نفس القرار المتخذ في home.tsx بالظبط (معرّفات التصنيف
-// مطابقة 1:1 بين mock والباك إند الحقيقي بالتصميم). getCategory وحدها
-// بقت من الباك إند الحقيقي (services/taxonomyService.ts) — هي اللي فعليًا
-// بتحدد اسم/حقول التصنيف المعروضة.
-import { categoryLabel, fieldLabel, getAllDescendantIds, getPath } from '@/mock/taxonomy/categories';
+// CategoryField اتجاب فعلًا (مش نداء بيانات). getCategory من الباك إند
+// الحقيقي (Phase 2A) — بتحدد اسم/حقول التصنيف المعروضة. البحث والفلترة
+// والترتيب نفسهم بقوا من searchListings الحقيقي (Phase 2B Slice 2) —
+// التصنيف وفروعه بيتوسّعوا سيرفر-side (search_listings's category_key
+// expansion، بيعيد استخدام get_descendant_ids)، مش محسوبين هنا محليًا.
+import { categoryLabel, fieldLabel } from '@/mock/taxonomy/categories';
 import { getCategory } from '@/services/taxonomyService';
-import { matchesQuery } from '@/lib/search';
+import { searchListings } from '@/services/listingService';
 import { useRequireAuth } from '@/lib/auth';
 import { CONDITION_LABELS, conditionLabel, type CategoryField, type Condition } from '@/mock/taxonomy/types';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -52,12 +51,12 @@ export default function Results() {
   const language = useLanguageStore((s) => s.language);
   const { colors, spacing, radius, brandDark } = useTheme();
   const insets = useSafeAreaInsets();
-  const allListings = useDiscoverableListings();
   const myCity = useAppStore((s) => s.onboarding.city);
   const favorites = useAppStore((s) => s.favorites);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sort, setSort] = useState<SortKey>('newest');
   const [query, setQuery] = useState(q ?? '');
+  const [debouncedQuery, setDebouncedQuery] = useState(q ?? '');
   const [conditionFilter, setConditionFilter] = useState<Condition | null>(null);
   const [fieldFilters, setFieldFilters] = useState<Record<string, string>>({});
   const addSavedSearch = useAppStore((s) => s.addSavedSearch);
@@ -75,32 +74,76 @@ export default function Results() {
     : t('results.allAds');
   const filterableFields: CategoryField[] = category?.fields.filter((f) => f.filterable && f.type === 'select') ?? [];
 
-  const scopedListings = useMemo(() => {
-    if (!category) return allListings;
-    const ids = new Set(getAllDescendantIds(category.id));
-    return allListings.filter((l) => ids.has(l.categoryKey));
-  }, [allListings, category]);
+  // بحث حقيقي عبر الشبكة على كل ضغطة حرف مش منطقي (كان بحث محلي فوري
+  // قبل كده) — debounce بسيط 300ms، نفس نمط CategoryStep's في
+  // app/post/index.tsx بالظبط.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
 
-  const results = useMemo(() => {
-    let r = [...scopedListings];
-    if (query.trim()) {
-      r = r.filter((l) => {
-        const categoryName = getPath(l.categoryKey).map((p) => p.name).join(' ');
-        const haystack = `${l.title} ${l.description} ${categoryName} ${l.city} ${l.district ?? ''}`;
-        return matchesQuery(haystack, query);
-      });
+  // nearest/favoritesFirst مش مدعومين سيرفر-side لسه (الأول محتاج
+  // إحداثيات جهاز، والتاني محتاج نظام Favorites حقيقي — خارج نطاق
+  // الشريحة دي بالكامل) — بيترتّبوا client-side على الصفحات المحمّلة
+  // بس، موثّق في MOBILE_BACKEND_INTEGRATION_REPORT.md.
+  const serverSort = sort === 'nearest' || sort === 'favoritesFirst' ? 'newest' : sort;
+
+  const { state: searchState, refetch: refetchSearch } = useApiResult(
+    () =>
+      searchListings({
+        q: debouncedQuery || undefined,
+        categoryKey: categoryId,
+        condition: conditionFilter ?? undefined,
+        fieldFilters: Object.keys(fieldFilters).length > 0 ? fieldFilters : undefined,
+        sort: serverSort,
+        page: 1,
+        limit: 20,
+      }),
+    [debouncedQuery, categoryId, conditionFilter, fieldFilters, serverSort],
+  );
+
+  // "تحميل المزيد" — تراكم يدوي، مش عن طريق useApiResult (ده استبدال مش
+  // إضافة) — بيتصفّر كل ما مجموعة الفلاتر الفعلية تتغيّر.
+  const [additionalItems, setAdditionalItems] = useState<Listing[]>([]);
+  const [nextPage, setNextPage] = useState(2);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
+
+  useEffect(() => {
+    setAdditionalItems([]);
+    setNextPage(2);
+    setLoadMoreFailed(false);
+  }, [debouncedQuery, categoryId, conditionFilter, fieldFilters, serverSort]);
+
+  const baseItems = searchState.kind === 'success' ? searchState.data.items : [];
+  const totalResults = searchState.kind === 'success' ? searchState.data.total : 0;
+
+  let results = [...baseItems, ...additionalItems];
+  if (sort === 'nearest') results = [...results].sort((a, b) => Number(b.city === myCity) - Number(a.city === myCity));
+  else if (sort === 'favoritesFirst') results = [...results].sort((a, b) => Number(!!favorites[b.id]) - Number(!!favorites[a.id]));
+
+  const hasMore = results.length < totalResults;
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    setLoadMoreFailed(false);
+    const r = await searchListings({
+      q: debouncedQuery || undefined,
+      categoryKey: categoryId,
+      condition: conditionFilter ?? undefined,
+      fieldFilters: Object.keys(fieldFilters).length > 0 ? fieldFilters : undefined,
+      sort: serverSort,
+      page: nextPage,
+      limit: 20,
+    });
+    setLoadingMore(false);
+    if (r.status !== 'success') {
+      setLoadMoreFailed(true);
+      return;
     }
-    if (conditionFilter) r = r.filter((l) => l.condition === CONDITION_LABELS[conditionFilter]);
-    for (const [key, value] of Object.entries(fieldFilters)) {
-      r = r.filter((l) => l.attributes?.[key] === value);
-    }
-    if (sort === 'cheapest') r.sort((a, b) => a.price - b.price);
-    else if (sort === 'priciest') r.sort((a, b) => b.price - a.price);
-    else if (sort === 'mostViewed') r.sort((a, b) => b.views - a.views);
-    else if (sort === 'nearest') r.sort((a, b) => Number(b.city === myCity) - Number(a.city === myCity));
-    else if (sort === 'favoritesFirst') r.sort((a, b) => Number(!!favorites[b.id]) - Number(!!favorites[a.id]));
-    return r;
-  }, [scopedListings, query, conditionFilter, fieldFilters, sort, myCity, favorites]);
+    setAdditionalItems((prev) => [...prev, ...r.data.items]);
+    setNextPage((p) => p + 1);
+  };
 
   const activeCount = (conditionFilter ? 1 : 0) + Object.keys(fieldFilters).length;
   const activeChips: { label: string; onRemove: () => void }[] = [
@@ -187,17 +230,39 @@ export default function Results() {
           ) : null}
 
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>
-            <Text style={{ fontSize: 11, color: colors.ink3 }}>{t('results.adsCount', { count: results.length })}</Text>
+            <Text style={{ fontSize: 11, color: colors.ink3 }}>{t('results.adsCount', { count: totalResults })}</Text>
             <Text style={{ fontSize: 11, color: colors.ink3 }}>{t(SORT_TKEY[sort] as Parameters<typeof t>[0])}</Text>
           </View>
 
-          <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
-            {results.length === 0 ? (
-              <Text style={{ textAlign: 'center', color: colors.ink3, fontSize: 12.5, paddingTop: 40 }}>{t('results.noMatches')}</Text>
-            ) : (
-              results.map((l) => <RowCard key={l.id} listing={l} />)
-            )}
-          </ScrollView>
+          {searchState.kind !== 'success' ? (
+            <ApiStateView state={searchState} onRetry={refetchSearch} />
+          ) : (
+            <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+              {results.length === 0 ? (
+                <Text style={{ textAlign: 'center', color: colors.ink3, fontSize: 12.5, paddingTop: 40 }}>{t('results.noMatches')}</Text>
+              ) : (
+                <>
+                  {results.map((l) => <RowCard key={l.id} listing={l} />)}
+                  {hasMore ? (
+                    <Pressable
+                      onPress={loadMore}
+                      disabled={loadingMore}
+                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14, marginTop: spacing.s2 }}
+                    >
+                      {loadingMore ? (
+                        <ActivityIndicator size="small" color={colors.signal} />
+                      ) : (
+                        <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.signal }}>{t('results.loadMore')}</Text>
+                      )}
+                    </Pressable>
+                  ) : null}
+                  {loadMoreFailed ? (
+                    <Text style={{ textAlign: 'center', color: colors.danger, fontSize: 11.5, paddingTop: 6, paddingBottom: 10 }}>{t('results.loadMoreFailed')}</Text>
+                  ) : null}
+                </>
+              )}
+            </ScrollView>
+          )}
         </>
       )}
 
@@ -250,7 +315,7 @@ export default function Results() {
                 {t('results.clearAll')}
               </Button>
               <View style={{ flex: 1 }}>
-                <Button onPress={() => setSheetOpen(false)}>{t('results.showResults', { count: results.length })}</Button>
+                <Button onPress={() => setSheetOpen(false)}>{t('results.showResults', { count: totalResults })}</Button>
               </View>
             </View>
           </Pressable>
