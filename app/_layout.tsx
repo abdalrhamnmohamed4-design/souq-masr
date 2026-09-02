@@ -22,6 +22,7 @@ import { I18nManager, Text, TextInput } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StartupGate } from '@/components/StartupGate';
+import { hydrateCredentialsCache } from '@/lib/authCredentials';
 import { ensureRTLMatchesLanguage } from '@/lib/rtl';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 
@@ -84,6 +85,10 @@ export default function RootLayout() {
 
   useEffect(() => {
     ensureRTLMatchesLanguage().finally(() => setRtlReady(true));
+    // بيسخّن كاش الاعتماد الحقيقي (lib/authCredentials.ts's peekStoredCredentials
+    // بتحتاجه sync) بدري في حياة التطبيق — Fire-and-forget، مش بوابة
+    // (مفيش تعطيل لرندر أي شاشة عشانه، بعكس StartupGate).
+    hydrateCredentialsCache();
   }, []);
 
   useEffect(() => {

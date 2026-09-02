@@ -61,7 +61,8 @@
         {
           "locationWhenInUsePermission": "سوق مصر محتاج موقعك عشان يحدّدلك مدينتك تلقائي ويقرّب الإعلانات منك."
         }
-      ]
+      ],
+      "expo-secure-store"
     ]
   }
 }

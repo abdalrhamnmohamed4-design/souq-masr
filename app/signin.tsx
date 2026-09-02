@@ -12,7 +12,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { CountryCodePicker } from '@/components/CountryCodePicker';
 import { Icon } from '@/components/Icon';
@@ -22,6 +22,8 @@ import { useT } from '@/i18n';
 import { resolvePendingAuthAction } from '@/lib/auth';
 import { flagEmoji, getCountry } from '@/lib/countries';
 import { isValidLocalPhoneForCountry, normalizePhoneForStorage } from '@/lib/validation';
+import { devLog } from '@/lib/devLog';
+import { signin as realSignin } from '@/services/authService';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -34,6 +36,7 @@ export default function SignIn() {
   // الرقم المحلي (من غير كود الدولة) بيتحرّر هنا وبس؛ onboarding.phone
   // بيتخزّن مطبّع بالكامل ("+20...") لحظة الدخول، مش أول ما المستخدم يكتب.
   const [localNumber, setLocalNumber] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
 
   const countryIso = onboarding.countryIso || 'EG';
   const country = getCountry(countryIso) ?? getCountry('EG')!;
@@ -101,9 +104,26 @@ export default function SignIn() {
         ) : null}
 
         <Button
-          disabled={!canContinue}
-          onPress={() => {
+          disabled={!canContinue || signingIn}
+          onPress={async () => {
             const normalized = normalizePhoneForStorage(country.dial, localNumber);
+            const name = onboarding.name.trim();
+
+            // نداء حقيقي على السيرفر — يسجّل/يلاقي مستخدم Frappe حقيقي
+            // ويخزّن api_key/api_secret (lib/authCredentials.ts) قبل ما
+            // نكمّل نفس تدفق الدخول المحلي القديم. لو فشل (مفيش نت/
+            // الباك إند واقع)، بنكمّل التدفق المحلي زي ما هو بالظبط —
+            // مفيش نجاح وهمي هنا لأن مفيش حاجة "نجحت" أصلًا غير الدخول
+            // المحلي (زي قبل الفيز دي بالظبط)؛ نقطة الإنفاذ الحقيقية
+            // (Phase 2B) هي وقت نشر إعلان فعلي (app/post/index.tsx's
+            // ensureCredentials)، مش هنا.
+            setSigningIn(true);
+            const authResult = await realSignin(name, normalized, country.iso2);
+            setSigningIn(false);
+            if (authResult.status !== 'success') {
+              devLog('signin', `real backend signin failed (${authResult.status}) — continuing with local-only session`);
+            }
+
             const patch: Parameters<typeof setOnboarding>[0] = { phone: normalized, countryIso: country.iso2 };
             if (!onboarding.joinedAt) patch.joinedAt = new Date().toISOString();
             setOnboarding(patch);
@@ -120,7 +140,7 @@ export default function SignIn() {
             router.replace('/home');
           }}
         >
-          {t('auth.enter')}
+          {signingIn ? <ActivityIndicator color="#fff" size="small" /> : t('auth.enter')}
         </Button>
       </View>
 

@@ -36,6 +36,7 @@
  * يتضاف لاحقًا (Phase 2)، مش بيتنادى من كل مكان دلوقتي.
  */
 import { getCurrentPlatform, getInstalledBuild, getInstalledVersion } from '@/lib/appInfo';
+import { buildAuthHeader, peekStoredCredentials } from '@/lib/authCredentials';
 import { devLog, devLogError } from '@/lib/devLog';
 import { checkDeviceConnectivity } from '@/services/connectivityService';
 import { allowDevMockBackend, API_BASE_URL } from '@/config/env';
@@ -113,10 +114,26 @@ export async function apiFetch(baseUrl: string, path: string, init: RequestInit 
  * `path` نسبي (زي "souq_masr.api.v1.taxonomy.get_children")، `params`
  * بيتحوّل لـquery string تلقائيًا.
  */
-export async function frappeGet<T>(
+/**
+ * منطق مشترك بين frappeGet وfrappePost — فحص الاتصال، dev-mock
+ * short-circuit، بناء الطلب، تفسير الرد. الاتنين بيرجعوا لنفس الشكل
+ * ApiResult<T> بالظبط، الفرق الوحيد هو method HTTP ومكان الباراميترز
+ * (query string لـGET، JSON body لـPOST — نفس تصنيف REST القياسي في
+ * Frappe نفسه: القراءة GET، أي حاجة بتغيّر حالة POST).
+ *
+ * `authenticated: true` بتحقن Authorization: token <api_key>:<api_secret>
+ * لو فيه اعتماد حقيقي مخزّن (lib/authCredentials.ts، من
+ * souq_masr.api.v1.auth.signin — Phase 2B) — ده اللي بيفرّق طلب Guest عن
+ * طلب مستخدم حقيقي من ناحية الباك إند، مش أي حقل تاني في الـbody. لو
+ * مفيش اعتماد مخزّن، الطلب بيتبعت من غير الـheader ده (كـGuest عاديةً —
+ * الباك إند هو اللي هيرفضه بـ403/401 لو الـmethod محتاج مصادقة).
+ */
+async function frappeRequest<T>(
   method: string,
-  params?: Record<string, string | number | undefined>,
-  timeoutMs = 10000,
+  httpMethod: 'GET' | 'POST',
+  params: Record<string, string | number | boolean | undefined> | undefined,
+  authenticated: boolean,
+  timeoutMs: number,
 ): Promise<ApiResult<T>> {
   const device = await checkDeviceConnectivity();
   if (!device.isInternetReachable) {
@@ -135,17 +152,34 @@ export async function frappeGet<T>(
     return { status: 'backend_unavailable', detail: 'API_BASE_URL is not configured' };
   }
 
-  const qs = params
-    ? '?' +
-      Object.entries(params)
-        .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-        .join('&')
-    : '';
-  const path = `/api/method/${method}${qs}`;
+  const cleanParams = params
+    ? Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined))
+    : {};
+
+  const authHeader = authenticated ? (() => {
+    const creds = peekStoredCredentials();
+    return creds ? buildAuthHeader(creds) : {};
+  })() : {};
+
+  let path: string;
+  let init: RequestInit;
+  if (httpMethod === 'GET') {
+    const qs = Object.keys(cleanParams).length
+      ? '?' + Object.entries(cleanParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&')
+      : '';
+    path = `/api/method/${method}${qs}`;
+    init = { method: 'GET', headers: { ...authHeader } };
+  } else {
+    path = `/api/method/${method}`;
+    init = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify(cleanParams),
+    };
+  }
 
   try {
-    const res = await apiFetch(API_BASE_URL, path, {}, timeoutMs);
+    const res = await apiFetch(API_BASE_URL, path, init, timeoutMs);
     devLog('apiClient', `${method} -> HTTP ${res.status}`);
 
     if (res.status === 401) return { status: 'unauthorized' };
@@ -161,6 +195,86 @@ export async function frappeGet<T>(
     if (err instanceof UpgradeRequiredError) throw err;
     const isAbort = err instanceof Error && err.name === 'AbortError';
     devLogError('apiClient', `${method} failed`, err);
+    if (isAbort) return { status: 'timeout' };
+    return { status: 'backend_unavailable', detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function frappeGet<T>(
+  method: string,
+  params?: Record<string, string | number | undefined>,
+  timeoutMs = 10000,
+): Promise<ApiResult<T>> {
+  return frappeRequest<T>(method, 'GET', params, /* authenticated */ true, timeoutMs);
+}
+
+/**
+ * نداء POST لأي `whitelisted` method بيغيّر حالة (إنشاء/تعديل/حذف إعلان
+ * مثلًا) — Phase 2B. بيحقن Authorization header تلقائيًا لو فيه اعتماد
+ * حقيقي مخزّن (معظم استخدامات POST محتاجة مصادقة أصلًا)؛ الباك إند نفسه
+ * هو اللي بيرفض 403/401 لو المستخدم Guest أو مش صاحب المورد — مفيش فحص
+ * صلاحيات هنا في العميل، القسم 10 من الطلب بيمنع الاعتماد على فحص
+ * frontend-only.
+ */
+export async function frappePost<T>(
+  method: string,
+  params?: Record<string, string | number | boolean | undefined>,
+  timeoutMs = 15000,
+): Promise<ApiResult<T>> {
+  return frappeRequest<T>(method, 'POST', params, /* authenticated */ true, timeoutMs);
+}
+
+export type LocalFileUpload = { uri: string; name: string; mimeType: string };
+
+/**
+ * رفع ملف حقيقي (صورة إعلان) لـFrappe's core /api/method/upload_file —
+ * مش whitelisted method خاص بينا، ده endpoint جاهز أصلًا في Frappe نفسه
+ * (شوف MOBILE_BACKEND_GAPS.md's Phase 2F note القديمة). Multipart،
+ * مش JSON body زي frappePost العادية، فمحتاج منطق منفصل بسيط هنا بدل ما
+ * نلوي frappeRequest عشانه. `isPrivate: false` دايمًا للصور دي تحديدًا —
+ * لازم تتعرض لأي Guest بيشوف إعلان عام من غير token، مش خاصة بصاحبها.
+ */
+export async function frappeUploadFile(
+  file: LocalFileUpload,
+  timeoutMs = 30000,
+): Promise<ApiResult<{ fileUrl: string }>> {
+  const device = await checkDeviceConnectivity();
+  if (!device.isInternetReachable) return { status: 'no_internet' };
+  if (allowDevMockBackend) return { status: 'backend_unavailable', detail: 'API_BASE_URL not configured (dev mock mode)' };
+  if (!API_BASE_URL) return { status: 'backend_unavailable', detail: 'API_BASE_URL is not configured' };
+
+  const creds = peekStoredCredentials();
+  if (!creds) return { status: 'unauthorized' };
+
+  const form = new FormData();
+  // React Native's fetch/FormData بتقبل شكل {uri,name,type} ده تحديدًا
+  // لملف محلي حقيقي من الجهاز (مش File/Blob زي المتصفح العادي).
+  form.append('file', { uri: file.uri, name: file.name, type: file.mimeType } as unknown as Blob);
+  form.append('is_private', '0');
+
+  try {
+    const res = await apiFetch(
+      API_BASE_URL,
+      '/api/method/upload_file',
+      { method: 'POST', headers: { ...buildAuthHeader(creds) }, body: form },
+      timeoutMs,
+    );
+    devLog('apiClient', `upload_file -> HTTP ${res.status}`);
+
+    if (res.status === 401) return { status: 'unauthorized' };
+    if (res.status === 403) return { status: 'forbidden' };
+    if (res.status === 422) return { status: 'validation_error' };
+    if (res.status === 429) return { status: 'rate_limited' };
+    if (!res.ok) return { status: 'server_error', httpStatus: res.status };
+
+    const body = await res.json();
+    const fileUrl = body?.message?.file_url;
+    if (!fileUrl) return { status: 'server_error', httpStatus: res.status };
+    return { status: 'success', data: { fileUrl } };
+  } catch (err) {
+    if (err instanceof UpgradeRequiredError) throw err;
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    devLogError('apiClient', 'upload_file failed', err);
     if (isAbort) return { status: 'timeout' };
     return { status: 'backend_unavailable', detail: err instanceof Error ? err.message : String(err) };
   }

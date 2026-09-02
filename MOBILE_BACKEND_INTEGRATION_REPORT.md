@@ -534,3 +534,511 @@ only source for actual listing data, unchanged.
 **This GO covers Phase 2A (Taxonomy) only.** Phase 2B (public listings/
 search/seller profile) may begin next; its endpoint requirements are
 catalogued in `MOBILE_BACKEND_GAPS.md`.
+
+---
+---
+
+# Phase 2B — Listings Domain: Real Backend Foundation
+
+**Scope of this section:** Phase 2B, first slice only — real backend foundation
+for marketplace Listings, plus the minimum real authentication needed to
+enforce ownership server-side. Chat, Favorites, Reviews, Jobs, Services,
+Notifications, Payments, and full application migration are **explicitly
+untouched**, per this phase's own instruction. Phase 2A (Taxonomy) is
+unmodified — nothing in this section reopens it.
+
+---
+
+## Phase 2B — Listing Domain Audit
+
+Before writing any backend code, the existing mobile listing model was
+mapped from source, not assumed:
+
+**`mock/listings.ts`'s `Listing` type** (the single listing shape used
+everywhere in the app — home, results, category pages, listing detail, my
+ads, edit, search, filters, favorites, sharing, reporting, sold flow):
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `string` | Locally generated (`store/useAppStore.ts`'s `addMyAd`: `my-new-${counter}`) — not a stable server id today |
+| `title`, `description` | `string` | |
+| `price` | `number` | |
+| `priceSuffix` | `string?` | Unused by the post-ad wizard; legacy display field |
+| `priceType` | `PriceType?` | `fixed\|negotiable\|free\|contact\|on_request\|per_day\|per_month\|per_hour\|per_unit` |
+| `sellingType` | `SellingType?` | `sale\|rent\|wanted\|exchange\|free\|service\|job\|business_sale\|auction\|other` |
+| `condition` | `string` | **Already-rendered Arabic label** (e.g. "ممتاز"), not the enum key — set at creation via `CONDITION_LABELS[key]`, not re-derived later |
+| `categoryKey`, `brandId?`, `modelId?` | `string` | Taxonomy references, Phase 2A ids |
+| `city`, `district?` | `string` | Plain display strings, derived from `locationId` at creation time via `locationPathLabel()`, not re-derived |
+| `locationId?` | `string` | Phase 2A location id |
+| `sellerId` | `string` | Always `'me'` today (`mock/users.ts`'s sentinel) or a seed listing's fixed id — **never a real user identity** |
+| `thumb` | `ThumbVariant` | Decorative fallback illustration when no real photo exists |
+| `images` | `number` | Photo **count**, not URLs |
+| `photoUris?` | `string[]` | Real local device URIs (`expo-image-picker`) — this is what actually renders |
+| `specs` | `{label,value}[]` | Pre-rendered attribute display rows, built once at creation from `category.fields` |
+| `attributes?` | `Record<string,string>` | Raw `key→value`, same shape as `postDraft.attributes` |
+| `views` | `number` | |
+| `isFeatured`, `isVerifiedSeller` | `boolean` | No real promotion/verification system exists yet |
+| `postedAt` | `string` | Pre-rendered relative-time string (e.g. `"الآن"`), not an ISO date |
+| `sellerType?` | `'individual'\|'business'` | |
+| `brandName?` | `string` | Free-text business brand name (distinct from the `Brand` taxonomy link) |
+| `sku?`, `variants?` | `ProductVariant[]` | Size/color stock variants — business accounts only |
+| `wholesalePrice?`, `minWholesaleQty?`, `discountPrice?`, `discountEndsAt?` | | Business pricing extras |
+| `saleStatus?` | `'active'\|'sold'` | Set only by the chat-based Sold Confirmation Flow (`confirmListingSold`) |
+
+**Zustand store/actions actually responsible for listings** (`store/useAppStore.ts`):
+`userListings: Listing[]` (real, user-created — separate from `mock/listings.ts`'s
+always-empty seed array) + `myAds: MyAd[]` (a **separate**, lighter-weight
+parallel record used only by the My Ads list screen — title/price/thumb/
+status/views/chats/favorites/expiresInDays, kept in sync by hand at every
+mutation point). Actions: `publishListing`, `updateListing`, `addMyAd`,
+`updateMyAd`, `removeMyAd`, `renewMyAd`, `promoteMyAd`,
+`confirmListingSold` (the chat-driven sold flow), `incrementListingViews`,
+`toggleFavorite`/`isFavorite`, `reportListing`/`hasReported`. Selectors:
+`useAllListings()` (`userListings` + seed), `useDiscoverableListings()`
+(same, minus `saleStatus==='sold'`), `useListingById(id)`, `useSeller(id)`
+(returns `mock/users.ts`'s empty `sellers` record, or a synthesized "me"
+seller built from `onboarding`).
+
+**Consumers cross-checked**: `app/(tabs)/home.tsx`/`results.tsx` (discovery
++ filtering, `useDiscoverableListings`), `app/(tabs)/categories.tsx` →
+`results.tsx` (category-scoped), `app/post/index.tsx` (creation/edit,
+`postDraft` → `Listing` patch), `app/detail/[id].tsx` (`useListingById` +
+`useSeller`, chat/favorite/report/view-increment actions), `app/(tabs)/
+myads.tsx` (`myAds`, separate from `userListings`), `app/myads`'s edit
+button (`?editId=`).
+
+**What this made clear before any backend design started:** `condition`,
+`city`/`district`, `postedAt`, and `specs` are all **pre-rendered display
+strings**, not raw data — the real backend can't just mirror the mock
+shape field-for-field; it has to store the *raw* values (enum keys, a
+location link, ISO timestamps, attribute key→value pairs) and let the
+mobile **service layer** do the same rendering step the old creation code
+used to do inline. This is exactly the adapter pattern already established
+in `services/taxonomyService.ts` (Phase 2A) — reused here, not reinvented.
+
+---
+
+## Real Frappe Listing Data Model
+
+Three new DocTypes, following the existing taxonomy DocTypes' own
+conventions exactly (compared field-by-field against `Souq Masr Listing
+Category`/`Souq Masr Brand` before writing anything):
+
+```
+Souq Masr Listing                    (main, autoname "LST-{#####}")
+├─ images        → Table  → Souq Masr Listing Image           (child, ordered by idx)
+└─ attributes    → Table  → Souq Masr Listing Attribute Value  (child, key→value)
+```
+
+**`Souq Masr Listing`** — normalized, not a JSON blob: `category`/`brand`/
+`model`/`location` are real `Link` fields into the **existing** Phase 2A
+taxonomy DocTypes (no second taxonomy system — the explicit instruction).
+`status` (`Draft\|Active\|Paused\|Sold\|Rejected`) models the full state
+machine the mobile app's `MyAd.status`/`Listing.saleStatus` already implied;
+new listings default straight to `Active` (no real review gate exists
+anywhere in this product yet — matches `store/useAppStore.ts`'s own
+`addMyAd` comment: `"'قيد المراجعة' كانت حالة وهمية"`). `city`/`district`
+display strings are **not stored** — derived server-side from `location` on
+every read (`_resolve_location_display()`, the same walk-up-the-tree logic
+as `get_location_path`), so they can never drift from the location tree.
+`Souq Masr Listing.validate()` enforces two cross-field rules a plain
+`Link` field can't express by itself: a listing's category can't be a
+`is_group` parent category, and if both `brand`/`model` are set they must
+actually belong to the chosen `category`/`brand` (checked against `Souq
+Masr Brand Category` and `Souq Masr Model.brand` — reusing Phase 2A's own
+brand↔category linkage, not duplicating it).
+
+**`Souq Masr Listing Image`** — one row per photo, `image` (Attach Image,
+holds a `file_url` from a prior `upload_file` call). No separate sort
+field — child-table row order (`idx`) *is* the display order, same pattern
+already used for category attribute definitions.
+
+**`Souq Masr Listing Attribute Value`** — one row per `attr_key`/`value`
+pair. Deliberately a **different** doctype from the pre-existing `Souq Masr
+Listing Attribute` (which is the category's field *schema*, not a listing's
+actual values) — reusing that table by name would have silently conflated
+"what fields exist for this category" with "what this one listing's field
+values are."
+
+**Deliberately NOT modeled this pass (disclosed, not silently dropped)**:
+`ProductVariant[]` (size/color/stock — the niche "Business/Product
+Listing" feature) and `sku`. `app/post/index.tsx`'s `publish()` routes a
+listing that has variants through the **existing local/mock path**
+unchanged, specifically *because* the real backend can't represent it yet —
+see "Vertical slice" below.
+
+---
+
+## Ownership / Authentication Architecture
+
+**The gap, found before writing any mutation endpoint:** `app/signin.tsx`
+made **zero** network calls — `onboarding.joinedAt` (a local timestamp) was
+the entire "authenticated" concept, and every listing's `sellerId` was the
+hardcoded string `'me'`. Per this phase's explicit instruction, that
+sentinel could not become backend authorization, and per the "stop before
+an insecure workaround" instruction, a minimum real auth foundation was
+built first — deliberately as small as the ownership requirement actually
+needs, not a full account system.
+
+**Mechanism: Frappe's own built-in API key/secret token auth**
+(`Authorization: token <api_key>:<api_secret>`) — not a new scheme. This is
+the exact mechanism Frappe core's own "Generate Keys" desk action uses
+(`frappe/core/doctype/user/user.py`'s `generate_keys`, confirmed by reading
+the live server's own framework source before building — System-Manager-
+only there, so `souq_masr.api.v1.auth.signin` replicates its few lines for
+a Guest-facing call instead). No session cookie is issued — the mobile app
+is a stateless REST client, so a token header (no cookie jar to manage) is
+the correct fit.
+
+**`souq_masr.api.v1.auth.signin(name, phone, country_iso)`** — `allow_guest=True`
+(this **is** the login call, matching `MOBILE_BACKEND_GAPS.md`'s own earlier
+Phase 2C proposal almost verbatim). Find-or-create a real Frappe `User`
+keyed by `mobile_no` (idempotent — same phone always resolves to the same
+user, confirmed live: calling `signin` twice with the same phone never
+creates a duplicate, `api_key` stays stable, `api_secret` is freshly
+re-issued each call). `user_type = "Website User"` — confirmed against the
+live server's actual `User Type` records (`Website User`/`System User`) after
+an initial live-test failure with the guessed value `"Website"` (see Bugs
+below), not assumed. Every new user gets Frappe's own auto-assigned `"All"`
+role (confirmed live via `frappe.get_roles()`), which is what makes the
+DocType's own permission rows below actually apply.
+
+**`Souq Masr Listing`'s permission rows** (the framework-level enforcement
+layer, independent of any Python `if` check):
+```
+Souq Masr Admin : read/write/create/delete/export/report = 1   (full admin)
+All             : read=1, create=1                              (any signed-in user)
+All (if_owner)  : write=1, delete=1                              (owner-only mutation)
+Guest           : read=1                                         (matches every other Phase 2A doctype)
+```
+`if_owner` is Frappe's own, already-shipped row-owner permission primitive —
+it compares the doc's standard `owner` field (who created it — set
+automatically by `insert()`, not a custom field) against the session user.
+Every mutation (`create_listing`/`update_listing`/`delete_listing`/
+`pause_listing`/`activate_listing`/`mark_listing_sold`) calls `insert()`/
+`save()`/`delete()` **without** `ignore_permissions=True`, so this layer is
+real, not decorative — plus a second, explicit `_assert_owner()` check in
+Python before ever touching the doc, matching the instruction's "enforced
+server-side, not just hidden in the UI" literally twice over. Read
+endpoints are `allow_guest=True`, but `get_listing`/`increment_listing_views`
+explicitly re-check status: a Guest (or any non-owner) requesting a
+`Draft`/`Rejected` listing gets the exact same clean 404 as a nonexistent
+id — never a 403 that would leak "this id exists but you can't see it."
+
+**What this does *not* cover (disclosed, not hidden):** no OTP/password/
+real login verification — the underlying "anyone who knows a phone number
+can claim that identity" limitation already disclosed in `lib/auth.ts`'s
+own header comment for the local-only version is now real on the server
+too, just moved from "purely cosmetic" to "actually issues a working API
+credential." This matches the mobile app's own already-shipped product
+decision (name + phone, no OTP — `app/signin.tsx`'s header comment), not a
+new weakness introduced by this phase; closing it is a Phase 2C
+(Authentication) concern, not this slice's.
+
+---
+
+## Listing API — inventory (12 endpoints, all live-tested)
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `create_listing` | Required | New listing, `status='Active'` immediately |
+| `get_listing` | Guest | Single listing; Draft/Rejected hidden from non-owners (clean 404) |
+| `update_listing` | Owner | Partial patch — only fields present in the request change |
+| `delete_listing` | Owner | Hard delete |
+| `pause_listing` | Owner | `Active → Paused` |
+| `activate_listing` | Owner | `Paused\|Draft → Active` |
+| `mark_listing_sold` | Owner | `Active\|Paused → Sold` |
+| `get_my_listings` | Required | All of the caller's own listings, any status, paginated |
+| `get_public_listings` | Guest | `Active` only, paginated, newest first |
+| `search_listings` | Guest | text (title+description) + category + condition + dynamic `field_filters` + governorate scope, all optional and combinable |
+| `get_listings_by_category` | Guest | thin wrapper over `search_listings(category_key=...)` |
+| `get_listings_by_location` | Guest | governorate/city/area + all descendants (mirrors `get_descendant_ids`'s recursion, for locations) |
+| `increment_listing_views` | Guest | Any public listing's view counter — not an ownership boundary, matches the mobile app's own pre-existing view-count UX |
+
+Every status transition is validated (`_transition_status()`'s
+`allowed_from` set) — `pause_listing` on an already-Paused listing is
+rejected with a clean `validation_error`, not silently accepted or crashed
+on. Invalid `category`/`location`/`brand`/`model` references are checked
+**before** `insert()`/`save()` runs (clean `validation_error`, the app's
+own message, not a raw `LinkValidationError`). No Python traceback is ever
+returned — confirmed live on every error path tested (System Settings'
+`allow_error_traceback=0`, the same fix verified in
+`BACKEND_PRODUCTION_READINESS.md` §9 Bug 4, still holding on this entirely
+new code path too).
+
+---
+
+## Image Architecture
+
+**No custom upload endpoint** — Frappe's own core `/api/method/upload_file`
+(already `allow_guest=True` at the framework level, gated behind a real
+session/token for non-guest uploads) is used exactly as
+`MOBILE_BACKEND_GAPS.md`'s old Phase 2F note anticipated. The mobile app
+uploads each photo (`is_private=0` — listing photos must be viewable by a
+Guest browsing without a token) and gets back a `file_url`; `create_listing`/
+`update_listing` accept `image_urls` (a list of those URLs) and create one
+`Souq Masr Listing Image` row per URL, in array order (stable ordering via
+child-table `idx`, no extra field needed).
+
+**Ownership check on attach, confirmed live**: before attaching any
+`file_url` to a listing, the server looks up the `File` doc and compares
+its standard `owner` field (the uploader) against the requesting session
+user — a different user's own previously-uploaded image cannot be attached
+to someone else's listing by simply reusing its URL (live-tested: User B
+attempting to attach User A's uploaded file gets a clean 403). A
+nonexistent `file_url` is rejected with a clean validation error, not a
+silent no-op or a crash.
+
+**Edit/replace**: `update_listing`'s `image_urls`, when present, **replaces**
+the listing's entire image set (old rows cleared, new ones appended) —
+matches the mobile post-ad wizard's own "manage a list of up to 6 photos"
+UX, where the final list, not a diff, is what the client already has in
+hand. **Disclosed gap**: replaced/removed images' underlying `File` docs
+are not deleted from disk on edit — an accepted simplification for this
+pass (orphaned files, not orphaned *listing data*; a storage-cleanup
+follow-up, not a correctness or security issue).
+
+---
+
+## Mobile Service Architecture
+
+Two new service modules, reusing every existing pattern (`lib/apiClient.ts`,
+`types/frappeApi.ts`, `hooks/useApiResult.ts`, `components/ApiStateView.tsx`)
+— no HTTP logic duplicated inside any screen:
+
+- **`lib/authCredentials.ts`** *(new)* — `expo-secure-store`-backed storage
+  for `{userId, name, phone, apiKey, apiSecret}` (Keychain on iOS,
+  Keystore-backed EncryptedSharedPreferences on Android — not plain
+  `AsyncStorage`, since `api_secret` is a live credential, not a UI
+  preference). A synchronous in-memory cache (`peekStoredCredentials()`)
+  lets `lib/apiClient.ts` inject the `Authorization` header without turning
+  every request function into a two-await chain; the cache is warmed once
+  at app startup (`app/_layout.tsx`, fire-and-forget, not a startup gate).
+- **`lib/apiClient.ts`** *(extended, not rewritten)* — `frappeGet`/
+  `frappePost` now share one internal `frappeRequest()`; `frappePost` sends
+  a JSON body instead of a query string and injects the auth header when
+  credentials exist. New `frappeUploadFile()` for the one genuinely
+  different case (`multipart/form-data`, not JSON).
+- **`services/authService.ts`** *(new)* — `signin()` (the real network call)
+  and `ensureCredentials()` (returns existing credentials instantly, or
+  silently re-runs `signin()` with the already-known local
+  `onboarding.name`/`phone` for a user who was locally authenticated before
+  real credentials existed — safe because `signin` is idempotent by phone).
+- **`services/listingService.ts`** *(new)* — all 12 endpoints, typed,
+  `ApiResult<T>`-based, adapting Frappe's raw snake_case response into the
+  app's **existing** `mock/listings.ts` `Listing` / `mock/users.ts` `Seller`
+  shapes — including re-deriving the pre-rendered display fields the audit
+  above identified (`condition` → `CONDITION_LABELS[key]`, `postedAt` → a
+  small relative-time formatter over the real `created_at`, `specs` → built
+  from the listing's raw `attributes` **and** a parallel `getCategory()`
+  call via the already-existing `services/taxonomyService.ts`, so field
+  labels come from the real taxonomy, not guessed). `isRealListingId(id)`
+  (`/^LST-\d+$/`) is the one piece of new routing logic — real backend ids
+  are structurally distinguishable from every local id shape
+  (`my-new-N`, mock seed ids), so no new route or query param was needed to
+  tell the two apart.
+
+---
+
+## Vertical Slice: POST AD → CREATE LISTING → SERVER → FETCH LISTING → LISTING DETAIL
+
+Migrated exactly one slice, exactly as scoped — not the whole app:
+
+1. **`app/signin.tsx`** — the submit button now also calls the real
+   `signin()` before continuing the *existing* local flow unchanged. If the
+   real call fails (no internet, backend down), the local session still
+   proceeds exactly as it did before this phase — the enforcement point
+   that actually matters (creating a real listing) is downstream, not here,
+   so a Listings-specific backend hiccup doesn't regress every other
+   still-local feature (chat, favorites, jobs) that also gates on
+   `onboarding.joinedAt`.
+2. **`app/post/index.tsx`**'s `publish()` — branches: an **edit**, or a
+   **new listing with variants**, uses the exact same local/mock path as
+   before, byte-for-byte unchanged (variants aren't modeled server-side
+   yet — see "Real Frappe Listing Data Model" above). A **brand-new,
+   variant-free** listing now: `ensureCredentials()` → uploads each photo
+   via `uploadListingImage()` → `createListing()`. Any failure at any step
+   (credentials, upload, or create) shows a real Arabic error message and
+   **stops** — nothing is added to the local mock store as if it had
+   succeeded. On real success, `resetPostDraft()` then
+   `router.replace('/detail/LST-#####')` — the **real** id from the
+   server's own response, not a locally-generated one. The wizard's UI
+   itself is visually unchanged; only the submit button gained a `loading`
+   state (`Button`'s existing `loading` prop, not a new component).
+3. **`app/detail/[id].tsx`** — `isRealListingId(id)` branches the data
+   source: a real id fetches via `listingService.getListing()` through
+   `useApiResult`, with `ApiStateView` for loading/error (a genuine UX
+   improvement over the old code's instant local lookup, since a real fetch
+   can meaningfully be slow or fail); every other id keeps the exact old
+   `useListingById`/`useSeller` local lookup, byte-for-byte. Once loaded,
+   the **entire rest of the screen is unchanged** — gallery, price,
+   specs, seller card, description, share/report/favorite/chat buttons all
+   read the same `listing`/`seller` shape whichever source they came from.
+   Favorites/report/chat/view-increment continue to operate through the
+   existing **local, mock** `useAppStore` actions for both real and mock
+   listings — those domains are explicitly out of scope this phase; the
+   one exception is the view counter, which now calls the real
+   `incrementListingViewsBackend()` for a real listing (matched to where
+   the number is actually stored) instead of the local one.
+
+**What this slice deliberately leaves mocked, and why** (Section 8 of the
+request: "keep mock data where real backend is not ready"):
+`app/(tabs)/myads.tsx` (still 100% local `myAds`/`userListings` — a newly
+created real listing does **not** yet appear there; `get_my_listings` is
+built and live-tested, just not wired into this screen), editing an
+existing listing (`update_listing` built/tested, not wired into
+`post/index.tsx`'s edit path), `app/results.tsx`/`app/(tabs)/home.tsx`'s
+listing discovery (still local `useDiscoverableListings`;
+`search_listings`/`get_public_listings`/`get_listings_by_category`/
+`get_listings_by_location` are built/tested, not wired in), variants/`sku`
+(not modeled server-side at all this pass).
+
+---
+
+## Live HTTP Test Results
+
+Two rounds, both against the real, live server (`187.7.19.136`) — not unit
+tests, not stubbed responses.
+
+**Round 1 — full endpoint contract** (`auth.signin` + all 12 `listings.*`
+endpoints, direct raw-payload calls):
+```
+auth.signin:
+  OK  first signin (new user) -> 200, real api_key/api_secret issued
+  OK  second signin, same phone -> same user (id unchanged), name updated,
+      api_key stable, api_secret freshly re-issued
+  OK  invalid phone (no +) -> clean validation_error, no traceback
+  OK  missing name -> clean validation_error, no traceback
+
+listings — security/ownership:
+  OK  Guest cannot create_listing (403, "not whitelisted" — Frappe's own
+      whitelist(allow_guest=False-by-default) dispatch, not custom code)
+  OK  invalid category / invalid location on create -> clean validation_error
+  OK  create_listing (User A) -> 200, id "LST-00001"-shaped, status Active,
+      governorate resolved correctly, is_owner=true, seller name correct
+  OK  Guest get_listing -> 200, is_owner=false (public read works)
+  OK  invalid listing_id -> clean 404, no traceback
+  OK  User B cannot update User A's listing -> 403
+  OK  User B cannot delete/pause/mark_sold User A's listing -> 403 (all 3)
+  OK  Owner (User A) CAN update -> 200, change reflected
+  OK  GET after update -> reflects the change (no stale cache)
+  OK  status transitions: pause -> activate -> mark_sold, all 200
+  OK  invalid transition (pause while already Paused) -> clean validation_error
+  OK  Sold listing still publicly readable via get_listing
+  OK  get_my_listings (owner) -> 200, includes the listing
+  OK  Guest cannot get_my_listings -> 403
+  OK  image upload (upload_file, is_private=0) -> 200, real file_url
+  OK  create_listing with that image -> 200, images=[file_url]
+  OK  User B cannot attach User A's uploaded file to their own listing -> 403
+  OK  nonexistent image_url on create -> clean validation_error
+  OK  get_public_listings -> Sold listing excluded, Active listing included
+  OK  search_listings by text/category/empty-query, all correct
+  OK  search_listings by field_filters (dynamic attribute) -> correct set,
+      Sold listings correctly excluded (Active-only search)
+  OK  get_listings_by_category / get_listings_by_location -> correct
+  OK  pagination (limit=1) respected
+  OK  increment_listing_views (Guest, public listing) -> counter increments
+  OK  delete (owner) -> 200; GET after delete -> 404
+======================================================================
+ALL 23 TEST GROUPS PASSED (0 failures) — all test listings cleaned up after
+```
+
+**Round 2 — exact mobile wire format** (mirrors `services/listingService.ts`'s
+actual request construction, including its double-JSON-encoding of
+`attributes`/`image_urls` inside the outer JSON body — a materially
+different wire shape from Round 1's raw-object payloads, and specifically
+what could have silently broken if the backend's `_parse_json_param()`
+only handled one of the two shapes):
+```
+OK  create_listing with JSON.stringify()'d attributes/image_urls -> 200,
+    attributes decoded correctly ({"platform": "PS4"})
+OK  get_listing (GET, query string, exactly as listingService.ts calls it) -> 200
+MIRROR TEST PASSED
+```
+
+**Honest methodology note** (same disclosed limitation as Phase 2A's §4):
+both rounds ran outside the Expo/Metro bundler as standalone Python scripts
+mirroring the real request/param construction — not a literal `import` of
+the `.ts` service files (no `@/` path-alias resolution available
+standalone). Every method name, param name, and the double-JSON-encoding
+behavior were copied from the real source files, not reinvented. Neither
+`app/post/index.tsx`'s real submit path nor `app/detail/[id].tsx`'s real
+fetch path has been exercised inside an actual device/simulator session in
+this environment (none is available here) — `tsc --noEmit` and
+`expo export` (below) are the closest available proxy for "does the real
+code as written actually compile and bundle," not a substitute for an
+on-device run.
+
+## Security / Ownership Test Results
+
+All explicitly required in Section 10 of the request, all live-verified
+above (cross-referenced): Guest cannot create/update/delete/pause/activate/
+mark-sold ✅ · User A cannot be modified, deleted, or marked sold by User B
+✅ · listing ids cannot be used to bypass ownership (tested directly, not
+inferred) ✅ · a stolen image URL cannot be attached to another user's
+listing ✅ · no Python traceback returned on any tested error path ✅.
+
+## Mobile Build Results
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | Clean, 0 errors |
+| `npx expo export --platform ios` | Succeeded, 1830 modules bundled, 0 errors |
+| New native dependency | `expo-secure-store` (`npx expo install`, config plugin auto-registered in `app.json`) — needed because `api_secret` is a live server credential, not a UI preference; plain `AsyncStorage` was judged insufficient for it |
+
+---
+
+## Bugs Found/Fixed This Pass
+
+One real bug, found via live testing (not assumed): the first `auth.signin`
+attempt guessed `user_type = "Website"`, which failed live with
+`LinkValidationError: Could not find User Type: Website` — the actual
+`User Type` records on this Frappe version are `"Website User"`/`"System
+User"` (confirmed by reading the live server's `User Type` table directly,
+not guessed a second time). Fixed, redeployed, re-tested, passing.
+
+## What Remains Mocked (this pass)
+
+`app/(tabs)/myads.tsx`, listing edit (UI side), `app/results.tsx`/
+`app/(tabs)/home.tsx`'s discovery feeds, `ProductVariant`/`sku` (not
+modeled server-side), Reviews/ratings feeding into `Seller.rating`
+(`services/listingService.ts`'s adapted seller always returns `rating: 0`
+— no real reviews system exists yet, Phase 2D scope), and everything
+outside Listings (Chat, Favorites persistence server-side, Jobs, Services,
+Notifications, Payments) — all explicitly out of scope, all unchanged.
+
+## Gaps / Recommended Next Phase 2B Step
+
+No blocking gaps for what this slice covers. Recommended next step, in
+order: **(1)** wire `get_my_listings`/`update_listing`/`delete_listing`/
+`pause_listing`/`activate_listing`/`mark_listing_sold` into
+`app/(tabs)/myads.tsx` and `app/post/index.tsx`'s edit path — the backend
+for all of it already exists and is live-tested, this is pure mobile
+wiring, no new endpoints needed; **(2)** wire `search_listings`/
+`get_public_listings`/`get_listings_by_category`/`get_listings_by_location`
+into `app/results.tsx`/`app/(tabs)/home.tsx` (same situation — built,
+tested, not connected); **(3)** only after both of those, consider modeling
+`ProductVariant`/`sku` server-side, since by then real usage patterns from
+(1)/(2) will say whether it's worth the schema complexity.
+
+---
+
+## Phase 2B (Slice 1) Decision
+
+# ✅ GO — for this vertical slice specifically (Listing creation → fetch → detail)
+
+Real backend built, deployed, and live-tested: 3 new DocTypes (normalized,
+reusing Phase 2A taxonomy — no second taxonomy system), 1 new auth endpoint
+(Frappe's own token mechanism, not invented), 12 new listing endpoints (all
+live-tested including ownership/security), 2 new mobile services
+(`authService.ts`, `listingService.ts`) reusing every existing
+infrastructure pattern, one complete vertical slice wired end-to-end with
+real error handling and zero fake success paths. `tsc`/`expo export` both
+clean. No Phase 2A regression (untouched). No Chat/Favorites/Reviews/Jobs/
+Services/Notifications/Payments code touched. No mock data deleted — every
+screen not in this slice keeps working exactly as it did before this phase.
+
+**This GO is scoped to the slice above only** — `myads.tsx`, listing edit,
+and `results.tsx`/`home.tsx` discovery remain mock and need their own
+migration pass (backend already built/tested for all of them) before a
+whole-of-Phase-2B GO can be declared.

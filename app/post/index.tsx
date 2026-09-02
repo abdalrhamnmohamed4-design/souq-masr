@@ -32,6 +32,8 @@ import {
   getPath,
   searchCategories,
 } from '@/services/taxonomyService';
+import { ensureCredentials } from '@/services/authService';
+import { createListing, uploadListingImage } from '@/services/listingService';
 import { LocationPicker } from '@/components/LocationPicker';
 import {
   CONDITION_LABELS,
@@ -54,7 +56,8 @@ export default function PostAd() {
   const { editId } = useLocalSearchParams<{ editId?: string }>();
   const { colors, spacing, radius, brandDark } = useTheme();
   const insets = useSafeAreaInsets();
-  const { postDraft, setPostDraft, resetPostDraft, addMyAd, updateMyAd, publishListing, updateListing, userListings, business } = useAppStore();
+  const { postDraft, setPostDraft, resetPostDraft, addMyAd, updateMyAd, publishListing, updateListing, userListings, business, onboarding } = useAppStore();
+  const [publishing, setPublishing] = useState(false);
 
   // تعديل إعلان موجود (PART QA-fix): قبل كده زرار "عدّل" كان بيفتح
   // فورم فاضي وبينشئ إعلان مكرر جديد بدل ما يعدّل الأصلي. دلوقتي بنحمّل
@@ -165,7 +168,24 @@ export default function PostAd() {
     return true;
   })();
 
-  const publish = () => requireOnline(() => {
+  // Phase 2B: إعلان جديد (مش تعديل) وبدون variants (الباك إند الحقيقي
+  // لسه مبيدعمش المقاسات/الألوان — القسم 8 من الطلب: "keep mock data
+  // where real backend is not ready") بيتنشر على الباك إند الحقيقي
+  // فعليًا. تعديل إعلان موجود، أو إعلان بمقاسات/ألوان، بيفضلوا محليين
+  // (mock) زي ما كانوا بالظبط — نفس الشريحة العمودية الواحدة اللي الطلب
+  // حدّدها (post → create → server → fetch → detail)، من غير ما نحاول
+  // نغطي edit أو variants في نفس الخطوة.
+  const useRealBackend = !editingListing && postDraft.variants.length === 0;
+
+  const publishErrorMessage = (status: string): string => {
+    if (status === 'no_internet') return 'مفيش اتصال بالإنترنت. اتأكد من اتصالك وحاول تاني.';
+    if (status === 'backend_unavailable' || status === 'timeout') return 'السيرفر مش متجاوب دلوقتي. جرّب تاني بعد شوية.';
+    if (status === 'unauthorized' || status === 'forbidden') return 'محتاجين نتأكد من حسابك الأول. سجّل دخولك تاني وحاول.';
+    if (status === 'validation_error') return 'فيه بيانات ناقصة أو غلط في الإعلان. راجع الخطوات وحاول تاني.';
+    return 'حصلت مشكلة وإحنا بننشر الإعلان. جرّب تاني.';
+  };
+
+  const publish = () => requireOnline(async () => {
     if (!category) return;
     const priceNum = toPositiveInt(postDraft.price) ?? 0;
 
@@ -205,6 +225,8 @@ export default function PostAd() {
     if (editingListing) {
       // تعديل حقيقي: بيحدّث نفس السجل (userListings + myAds) بنفس الـid،
       // مش بينشئ إعلان جديد مكرر — وبيحافظ على views/postedAt/isFeatured.
+      // لسه محلي بالكامل (update_listing الحقيقي مبني ومُختبر حي، بس مش
+      // متوصّل لتعديل من الشاشة دي في الشريحة العمودية دي — القسم 8).
       updateListing(editingListing.id, patch);
       updateMyAd(editingListing.id, { title: patch.title, price: patch.price, photoUri: patch.photoUris?.[0] });
       resetPostDraft();
@@ -213,13 +235,74 @@ export default function PostAd() {
       return;
     }
 
-    const id = addMyAd({ title: postDraft.title, price: priceNum, thumb: 'a', photoUri: postDraft.photoUris[0] });
-    const fullListing: Listing = { id, sellerId: 'me', postedAt: 'الآن', views: 0, isFeatured: false, isVerifiedSeller: false, ...patch };
-    publishListing(fullListing);
+    if (!useRealBackend) {
+      // إعلان بمقاسات/ألوان (variants) — الباك إند الحقيقي مبيمثّلهاش
+      // لسه، فبيفضل محلي عشان مفيش بيانات المستخدم كتبها تضيع صامتة.
+      const id = addMyAd({ title: postDraft.title, price: priceNum, thumb: 'a', photoUri: postDraft.photoUris[0] });
+      const fullListing: Listing = { id, sellerId: 'me', postedAt: 'الآن', views: 0, isFeatured: false, isVerifiedSeller: false, ...patch };
+      publishListing(fullListing);
+      resetPostDraft();
+      setStepIndex(0);
+      router.replace('/myads');
+      return;
+    }
 
-    resetPostDraft();
-    setStepIndex(0);
-    router.replace('/myads');
+    // ---- الشريحة العمودية الحقيقية: POST AD → CREATE LISTING → SERVER →
+    // FETCH LISTING → LISTING DETAIL. مفيش نجاح وهمي هنا — أي فشل (شبكة/
+    // مصادقة/تحقق) بيوقف العملية ويوضّح خطأ حقيقي، مش بيضيف الإعلان محليًا
+    // كإنه نجح. ----
+    setPublishing(true);
+    try {
+      const credsResult = await ensureCredentials(onboarding.name, onboarding.phone, onboarding.countryIso);
+      if (credsResult.status !== 'success') {
+        Alert.alert('تعذّر النشر', publishErrorMessage(credsResult.status));
+        return;
+      }
+
+      const imageUrls: string[] = [];
+      for (const uri of postDraft.photoUris) {
+        const uploadResult = await uploadListingImage({ uri, name: uri.split('/').pop() || `photo-${Date.now()}.jpg`, mimeType: 'image/jpeg' });
+        if (uploadResult.status !== 'success') {
+          Alert.alert('تعذّر رفع الصور', publishErrorMessage(uploadResult.status));
+          return;
+        }
+        imageUrls.push(uploadResult.data);
+      }
+
+      const createResult = await createListing({
+        title: postDraft.title,
+        description: postDraft.description,
+        category: category.id,
+        location: postDraft.locationId!,
+        price: priceNum,
+        priceType: postDraft.priceType,
+        brand: postDraft.brandId,
+        model: postDraft.modelId,
+        sellingType: postDraft.sellingType,
+        condition: postDraft.condition,
+        sellerType: business ? 'business' : 'individual',
+        brandName: business?.name ?? null,
+        wholesalePrice: toPositiveInt(postDraft.wholesalePrice) ?? null,
+        minWholesaleQty: toPositiveInt(postDraft.minWholesaleQty) ?? null,
+        discountPrice: toPositiveInt(postDraft.discountPrice) ?? null,
+        discountEndsAt: postDraft.discountPrice ? postDraft.discountEndsAt : null,
+        attributes: postDraft.attributes,
+        imageUrls,
+      });
+
+      if (createResult.status !== 'success') {
+        Alert.alert('تعذّر نشر الإعلان', publishErrorMessage(createResult.status));
+        return;
+      }
+
+      resetPostDraft();
+      setStepIndex(0);
+      // الشاشة الحقيقية بتجيب الإعلان من الباك إند تاني (مش بيانات محلية
+      // ممرّرة) — عشان نتأكد فعليًا إن اللي اتنشر هو اللي هيتعرض، مش نفترض.
+      router.replace(`/detail/${createResult.data.listing.id}`);
+    } finally {
+      setPublishing(false);
+    }
   });
 
   return (
@@ -267,7 +350,11 @@ export default function PostAd() {
           رجوع
         </Button>
         <View style={{ flex: 1 }}>
-          <Button disabled={!canNext} onPress={() => (stepIndex < steps.length - 1 ? goNext() : publish())}>
+          <Button
+            disabled={!canNext || publishing}
+            loading={stepIndex >= steps.length - 1 && publishing}
+            onPress={() => (stepIndex < steps.length - 1 ? goNext() : publish())}
+          >
             {stepIndex < steps.length - 1 ? 'التالي' : editingListing ? 'احفظ التعديلات' : 'انشر الإعلان'}
           </Button>
         </View>

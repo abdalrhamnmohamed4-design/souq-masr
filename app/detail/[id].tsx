@@ -7,10 +7,12 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Image, Pressable, Share, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
 import { Avatar } from '@/components/primitives/Avatar';
 import { Button } from '@/components/primitives/Button';
 import { Pill } from '@/components/primitives/Pill';
+import { useApiResult } from '@/hooks/useApiResult';
 import { getBrand } from '@/mock/taxonomy/brands';
 import { getCategory, getPath } from '@/mock/taxonomy/categories';
 import { getModel } from '@/mock/taxonomy/models';
@@ -19,6 +21,11 @@ import { BrandLogo } from '@/components/BrandLogo';
 import { formatListingPrice } from '@/lib/price';
 import { useRequireAuth } from '@/lib/auth';
 import type { ProductVariant } from '@/mock/listings';
+import {
+  getListing as getRealListing,
+  incrementListingViews as incrementListingViewsBackend,
+  isRealListingId,
+} from '@/services/listingService';
 import { useAppStore, useListingById, useSeller, type ReportReason } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -49,8 +56,21 @@ export default function Detail() {
   const [galleryIndex, setGalleryIndex] = React.useState(0);
   const [selectedVariant, setSelectedVariant] = React.useState<ProductVariant | undefined>(undefined);
 
-  const listing = useListingById(id);
-  const seller = useSeller(listing?.sellerId);
+  // Phase 2B: id بتاع LST-##### معناه إعلان حقيقي من الباك إند (نشر
+  // فعلي من app/post/index.tsx's create_listing) — بديل بحث محلي في
+  // userListings/mock/listings.ts. أي id تاني (my-new-N وغيره) لسه بيتقرا
+  // محليًا زي ما كان بالظبط، مفيش تغيير هناك خالص.
+  const isReal = isRealListingId(id);
+  const { state: realState, refetch: refetchReal } = useApiResult(
+    () => (isReal && id ? getRealListing(id) : Promise.resolve({ status: 'success' as const, data: null })),
+    [id, isReal],
+  );
+
+  const mockListing = useListingById(id);
+  const mockSeller = useSeller(mockListing?.sellerId);
+
+  const listing = isReal ? (realState.kind === 'success' ? realState.data?.listing : undefined) : mockListing;
+  const seller = isReal ? (realState.kind === 'success' ? realState.data?.seller : undefined) : mockSeller;
 
   React.useEffect(() => {
     setSelectedVariant(listing?.variants?.find((v) => v.stock > 0) ?? listing?.variants?.[0]);
@@ -58,9 +78,20 @@ export default function Detail() {
   }, [listing?.id]);
 
   React.useEffect(() => {
-    if (listing) incrementListingViews(listing.id);
+    if (!listing) return;
+    if (isReal) incrementListingViewsBackend(listing.id);
+    else incrementListingViews(listing.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listing?.id]);
+
+  if (isReal && realState.kind !== 'success') {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.paper, justifyContent: 'center' }}>
+        <ApiStateView state={realState} onRetry={refetchReal} />
+      </View>
+    );
+  }
+
   if (!listing || !seller) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.paper }}>

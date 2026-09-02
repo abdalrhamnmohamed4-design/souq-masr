@@ -6,7 +6,9 @@ which currently contains exactly two API modules:
 
 ```
 souq_masr/api/v1/app_config.py   — app version/force-update check (integrated, StartupGate)
-souq_masr/api/v1/taxonomy.py     — 12 endpoints (integrated, Phase 2A COMPLETE — see MOBILE_BACKEND_INTEGRATION_REPORT.md)
+souq_masr/api/v1/taxonomy.py     — 12 endpoints (integrated, Phase 2A COMPLETE)
+souq_masr/api/v1/auth.py         — 1 endpoint: signin (integrated, Phase 2B — see MOBILE_BACKEND_INTEGRATION_REPORT.md)
+souq_masr/api/v1/listings.py     — 12 endpoints (built + live-tested, Phase 2B — only create_listing/get_listing are wired into a mobile screen so far; see MOBILE_BACKEND_INTEGRATION_REPORT.md's Phase 2B section for exactly which ones)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -57,28 +59,36 @@ was closed, per this doc's own "don't fake it, document it" convention.
 
 ## Phase 2B — Public listings / search / filters / seller profile
 
-None of these have a backend DocType or endpoint yet — `store/useAppStore.ts`'s `userListings` + `mock/listings.ts`'s seed data remain the only source.
+**Update:** listing search/discovery/detail endpoints are now **built and
+live-tested** (`souq_masr.api.v1.listings.*` — see
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B section). What's left
+below is genuinely not built yet, or built-but-not-wired-to-a-screen
+(marked explicitly which is which).
 
-| Feature | Required endpoint (proposed) | Auth | Priority |
+| Feature | Status | Auth | Priority |
 |---|---|---|---|
-| List/search listings (`app/results.tsx`) | `souq_masr.api.v1.listings.search` — params: `q, category_key, condition, field_filters, sort, city, page, limit` → paginated `{items, total, page}` | Guest | High |
-| Listing detail (`app/detail/[id].tsx`) | `souq_masr.api.v1.listings.get(listing_id)` | Guest | High |
-| Seller public profile (`app/seller/[id].tsx`) | `souq_masr.api.v1.sellers.get_public_profile(seller_id)` | Guest | High |
-| Increment view count | `souq_masr.api.v1.listings.increment_views(listing_id)` | Guest | Medium |
-| Saved searches sync (`store`'s `savedSearches`) | `souq_masr.api.v1.saved_searches.*` | **Auth** | Medium |
+| List/search listings (`app/results.tsx`) | ✅ Backend built+tested (`search_listings` — `q, category_key, condition, field_filters, city_governorate, page, limit`). ⏳ **Not wired into `results.tsx`** — still 100% local `useDiscoverableListings`. | Guest | High |
+| Listing detail (`app/detail/[id].tsx`) | ✅ Backend built+tested (`get_listing`). ✅ **Wired** — real listings (`LST-#####` ids) fetch from the backend; local ids unchanged. | Guest | Done for real listings |
+| Listing discovery by category/location (`app/(tabs)/home.tsx`) | ✅ Backend built+tested (`get_listings_by_category`, `get_listings_by_location`). ⏳ Not wired — `home.tsx`'s listing sections still local. | Guest | High |
+| Seller public profile (`app/seller/[id].tsx`) | ⏳ **Not built.** `get_listing`/`get_public_listings` embed minimal seller display fields (name/phone/member-since/ads-count) directly in the listing response as a pragmatic substitute for this slice, but there's still no standalone seller-profile endpoint (reviews, full ad history, etc.) | Guest | High |
+| Increment view count | ✅ Backend built+tested+wired (`increment_listing_views`, called from `app/detail/[id].tsx` for real listings) | Guest | Done |
+| Saved searches sync (`store`'s `savedSearches`) | ⏳ Not built | **Auth** | Medium |
 
 ## Phase 2C — Authentication / profile
 
-The mobile app's entire auth model today (`app/signin.tsx`, name+phone,
-`onboarding.joinedAt`) is **100% local** — no session, no token, nothing
-sent to any server. This is the single biggest gap in the whole app.
+**Update:** the "Critical, blocks everything else" item below is now
+**built and live-tested** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s
+Phase 2B "Ownership / Authentication Architecture" section for the full
+design (Frappe's own token auth, not a new scheme). It exists **only**
+because real listing ownership needed it; it was not itself the goal of
+Phase 2B. `users.me`/`users.update`/social sign-in remain unbuilt.
 
-| Feature | Required endpoint (proposed) | Auth | Priority |
+| Feature | Status | Auth | Priority |
 |---|---|---|---|
-| Create/find user by phone (no OTP, per the app's own product decision — see `app/signin.tsx`'s header comment) | `souq_masr.api.v1.auth.signin(name, phone, country_iso)` → session/API key | Public (this IS the login call) | **Critical** — blocks everything else in 2C-2F |
-| Get current user profile | `souq_masr.api.v1.users.me` | Auth | High |
-| Update profile | `souq_masr.api.v1.users.update` | Auth | High |
-| Social sign-in (Google/Apple/Facebook — buttons already exist in `app/welcome.tsx`, deliberately non-functional, see `lib/socialAuth.ts`) | `souq_masr.api.v1.auth.social_login(provider, id_token)` | Public | Low (buttons already honestly disabled client-side) |
+| Create/find user by phone (no OTP, per the app's own product decision — see `app/signin.tsx`'s header comment) | ✅ **Built, deployed, live-tested, wired.** `souq_masr.api.v1.auth.signin(name, phone, country_iso)` → real Frappe `User` (Website User) + `api_key`/`api_secret` (Frappe's own token-auth mechanism, not a session cookie). Idempotent by phone — confirmed live. Called from `app/signin.tsx`'s existing submit flow (`services/authService.ts`). | Public (this IS the login call) | Done |
+| Get current user profile | ⏳ Not built | Auth | High |
+| Update profile | ⏳ Not built | Auth | High |
+| Social sign-in (Google/Apple/Facebook — buttons already exist in `app/welcome.tsx`, deliberately non-functional, see `lib/socialAuth.ts`) | ⏳ Not built | Public | Low (buttons already honestly disabled client-side) |
 
 ## Phase 2D — User actions
 
@@ -101,17 +111,38 @@ sent to any server. This is the single biggest gap in the whole app.
 
 ## Phase 2F — Listing creation / edit / images
 
-| Feature | Required endpoint (proposed) | Auth | Priority |
+**Update:** all 5 rows below are now **built and live-tested** backend-side
+(`souq_masr.api.v1.listings.*` — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s
+Phase 2B section, including full ownership/security test results). Only
+`create_listing` is wired into a mobile screen this pass — the rest are
+ready for the next Phase 2B step (wiring `myads.tsx`'s edit/delete/pause/
+activate/mark-sold actions to the real endpoints instead of local-only
+`updateListing`/`removeMyAd`).
+
+| Feature | Status | Auth | Priority |
 |---|---|---|---|
-| Create listing | `souq_masr.api.v1.listings.create` | Auth | **Critical** for the app's core purpose |
-| Edit listing | `souq_masr.api.v1.listings.update` | Auth (owner only) | High |
-| Delete listing | `souq_masr.api.v1.listings.delete` | Auth (owner only) | High |
-| Upload image(s) | Frappe's standard `/api/method/upload_file` (already exists in core Frappe — no custom endpoint needed, just needs to be wired up and given a private/public file policy decision) | Auth | High |
-| Mark as sold | `souq_masr.api.v1.listings.mark_sold` (backs the already-built `confirmListingSold()` client flow in `store/useAppStore.ts`) | Auth (owner only) | Medium |
+| Create listing | ✅ Built, tested, **wired** — `app/post/index.tsx`'s `publish()` (new, variant-free listings only; edits and listings-with-variants still local, disclosed in the integration report) | Auth | Done for this slice |
+| Edit listing | ✅ Backend built+tested (`update_listing`, partial-patch). ⏳ Not wired — `post/index.tsx`'s edit path still local-only | Auth (owner only) | High |
+| Delete listing | ✅ Backend built+tested (`delete_listing`). ⏳ Not wired to `myads.tsx` | Auth (owner only) | High |
+| Pause / activate listing | ✅ Backend built+tested (`pause_listing`/`activate_listing`, with status-transition validation). ⏳ Not wired to any screen (no UI for this exists in `myads.tsx` yet either — new UI, not just new wiring) | Auth (owner only) | Medium |
+| Upload image(s) | ✅ Wired — Frappe's standard `/api/method/upload_file`, called from `app/post/index.tsx`'s publish flow (`services/listingService.ts`'s `uploadListingImage`), `is_private=0`, ownership-checked on attach | Auth | Done |
+| Mark as sold | ✅ Backend built+tested (`mark_listing_sold`). ⏳ Not wired — the mobile app's existing chat-based `confirmListingSold()` flow (`store/useAppStore.ts`) still only updates the local mock store; connecting it to the real endpoint needs Chat itself to be real first (Phase 2E), since the trigger lives inside a chat message today | Auth (owner only) | Medium |
 
 ---
+
+## Real gap (not yet catalogued as its own phase) — Listing variants
+
+`ProductVariant[]`/`sku` (the "Business/Product Listing" size/color/stock
+feature, business accounts only) is **not modeled** in `Souq Masr Listing`
+at all — deliberately deferred out of Phase 2B's first slice (see
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B section). A listing with
+variants still publishes through the local/mock path only, so no user data
+is silently dropped, but it also never reaches the real backend. Needs its
+own child-table design (`Souq Masr Listing Variant`: size/color/stock) —
+a small, contained follow-up once basic Listings usage patterns are clear.
 
 ## Not a gap — explicitly out of scope this phase
 
 - **Admin dashboard** (`admin/`) — untouched per this phase's explicit instruction, not evaluated here.
 - **Domain + SSL** for the backend — tracked in `BACKEND_PRODUCTION_READINESS.md` §12, not a mobile-integration gap.
+- **Chat, Reviews, Favorites (server-side), Jobs, Services, Notifications, Payments** — explicitly excluded from Phase 2B by this phase's own instruction, not evaluated here.
