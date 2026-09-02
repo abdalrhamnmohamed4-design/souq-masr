@@ -212,12 +212,25 @@ def get_my_services(status=None, page=1, limit=PAGE_SIZE_DEFAULT):
 	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
 
 
+# app/services/results.tsx's filter sheet — trade_key وsort كانوا موجودين
+# في الواجهة (تصفية بالمهنة الفرعية، ترتيب بالسعر) من غير دعم حقيقي في
+# الباك إند، فكان لازم client-side filtering على المصفوفة الوهمية كلها.
+def _service_sort_order_by(sort):
+	return {
+		"newest": "creation desc",
+		"price_asc": "price asc, creation desc",
+		"price_desc": "price desc, creation desc",
+	}.get(sort, "creation desc")
+
+
 @frappe.whitelist(allow_guest=True)
-def search_services(q=None, category_key=None, price_type=None, page=1, limit=PAGE_SIZE_DEFAULT):
+def search_services(q=None, category_key=None, trade_key=None, price_type=None, sort=None, page=1, limit=PAGE_SIZE_DEFAULT):
 	page, limit, offset = _paginate(page, limit)
 	filters = {"status": "active"}
 	if category_key:
 		filters["category_key"] = category_key
+	if trade_key:
+		filters["trade_key"] = trade_key
 	if price_type:
 		filters["price_type"] = price_type
 
@@ -230,7 +243,7 @@ def search_services(q=None, category_key=None, price_type=None, page=1, limit=PA
 		filters["name"] = ["in", list(names)]
 
 	total = frappe.db.count("Souq Masr Service", filters)
-	rows = frappe.get_all("Souq Masr Service", filters=filters, fields=SUMMARY_FIELDS, order_by="creation desc", limit_start=offset, limit_page_length=limit)
+	rows = frappe.get_all("Souq Masr Service", filters=filters, fields=SUMMARY_FIELDS, order_by=_service_sort_order_by(sort), limit_start=offset, limit_page_length=limit)
 	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
 
 

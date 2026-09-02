@@ -3,6 +3,15 @@
  * تجربة مستقلة عن السوق العام — لما المستخدم يفتح "الوظائف" لازم يحس إنه
  * دخل سوق وظائف احترافي متخصص. مفيش بيانات وهمية: كل قسم بيتحسب من
  * وظائف حقيقية اتنشرت فعليًا، وبيختفي لو مفيش بيانات كافية بدل ما يتلفّق.
+ *
+ * Phase 2B — Jobs + Services Mobile Wiring: كل قسم دلوقتي دمج حقيقي —
+ * نداء search_jobs مستقل لكل قسم (نفس نمط app/(tabs)/home.tsx بالظبط،
+ * فشل قسم واحد مش بيوقف الباقي) + وظائف mock محلية لسه موجودة مدموجة
+ * جنبها. "وظائف مميزة"/"مرشّحة لمهنتك" فضلوا mock بس — مفيش is_featured
+ * حقيقي على Souq Masr Job (نفس سابقة الإعلانات: مفيش نظام تمييز)، ومفيش
+ * حقل مهنة على Career Profile الحقيقي (نطاق مختصر عمدًا). "شركات توظف
+ * الآن" بقت من get_hiring_companies (تجميع سيرفري، مش fetch كل الوظائف
+ * وتصفيتها محليًا).
  */
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -13,13 +22,25 @@ import { Icon } from '@/components/Icon';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Pill } from '@/components/primitives/Pill';
 import { getJobCategories } from '@/mock/jobs/categories';
+import { useApiResult } from '@/hooks/useApiResult';
 import { useRequireAuth } from '@/lib/auth';
-import { WORK_TYPE_LABELS, type Job, type WorkType } from '@/mock/jobs/types';
+import { WORK_TYPE_LABELS, type WorkType } from '@/mock/jobs/types';
+import { getHiringCompanies, searchJobs, type HiringCompany, type RealJobSummary } from '@/services/jobService';
+import { getMySavedJobs, saveJob, unsaveJob } from '@/services/savedJobService';
 import { useAllCompanies, useAllJobs, useJobsStore } from '@/store/useJobsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
 const QUICK_WORK_TYPES: WorkType[] = ['full_time', 'part_time', 'remote', 'freelance', 'internship'];
+
+type DisplayJobCard = {
+  id: string; title: string; companyName: string | null; city: string;
+  isUrgent: boolean; salaryMin: number | null; salaryMax: number | null; salaryHidden: boolean; isReal: boolean;
+};
+
+function adaptReal(j: RealJobSummary): DisplayJobCard {
+  return { id: j.id, title: j.title, companyName: null, city: j.city, isUrgent: j.isUrgent, salaryMin: j.salaryMin, salaryMax: j.salaryMax, salaryHidden: j.salaryHidden, isReal: true };
+}
 
 export default function JobsHome() {
   const router = useRouter();
@@ -28,19 +49,62 @@ export default function JobsHome() {
   const [query, setQuery] = useState('');
   const allJobs = useAllJobs();
   const companies = useAllCompanies();
-  const savedJobs = useJobsStore((s) => s.savedJobs);
+  const savedJobsMock = useJobsStore((s) => s.savedJobs);
+  const toggleSaveMock = useJobsStore((s) => s.toggleSaveJob);
+  const isSavedMock = useJobsStore((s) => s.isJobSaved);
   const careerProfile = useJobsStore((s) => s.careerProfile);
   const city = useAppStore((s) => s.onboarding.city);
+  const requireAuth = useRequireAuth();
 
   const published = allJobs.filter((j) => j.status === 'published');
   const featured = published.filter((j) => j.isFeatured);
-  const urgent = published.filter((j) => j.isUrgent);
-  const remote = published.filter((j) => j.remote);
-  const nearby = city ? published.filter((j) => j.city === city) : [];
-  const recommended = careerProfile?.professionId
-    ? published.filter((j) => j.professionId === careerProfile.professionId)
+  const recommended = careerProfile?.professionId ? published.filter((j) => j.professionId === careerProfile.professionId) : [];
+  const mockHiringCompanies = companies.filter((c) => published.some((j) => j.companyId === c.id));
+
+  const adaptMock = (j: (typeof published)[number]): DisplayJobCard => ({
+    id: j.id, title: j.title, companyName: companies.find((c) => c.id === j.companyId)?.name ?? null,
+    city: j.city, isUrgent: j.isUrgent, salaryMin: j.salaryMin ?? null, salaryMax: j.salaryMax ?? null, salaryHidden: j.salaryHidden, isReal: false,
+  });
+
+  const { state: newestState } = useApiResult(() => searchJobs({ sort: 'newest', limit: 10 }), []);
+  const { state: urgentState } = useApiResult(() => searchJobs({ isUrgent: true, limit: 10 }), []);
+  const { state: remoteState } = useApiResult(() => searchJobs({ remote: true, limit: 10 }), []);
+  const { state: nearbyState } = useApiResult(
+    () => (city ? searchJobs({ city, limit: 10 }) : Promise.resolve({ status: 'success' as const, data: { items: [] as RealJobSummary[], total: 0 } })),
+    [city],
+  );
+  const { state: hiringState } = useApiResult(() => getHiringCompanies(10), []);
+  const { state: realSavedState, refetch: refetchRealSaved } = useApiResult(() => getMySavedJobs(), []);
+
+  const realSavedIds = new Set(realSavedState.kind === 'success' ? realSavedState.data.items.map((j) => j.id) : []);
+  const savedBadgeCount = savedJobsMock.length + realSavedIds.size;
+
+  const newestRail: DisplayJobCard[] = [...(newestState.kind === 'success' ? newestState.data.items.map(adaptReal) : []), ...published.map(adaptMock)];
+  const urgentRail: DisplayJobCard[] = [...(urgentState.kind === 'success' ? urgentState.data.items.map(adaptReal) : []), ...published.filter((j) => j.isUrgent).map(adaptMock)];
+  const remoteRail: DisplayJobCard[] = [...(remoteState.kind === 'success' ? remoteState.data.items.map(adaptReal) : []), ...published.filter((j) => j.remote).map(adaptMock)];
+  const nearbyRail: DisplayJobCard[] = city
+    ? [...(nearbyState.kind === 'success' ? nearbyState.data.items.map(adaptReal) : []), ...published.filter((j) => j.city === city).map(adaptMock)]
     : [];
-  const hiringCompanies = companies.filter((c) => published.some((j) => j.companyId === c.id));
+  const featuredRail: DisplayJobCard[] = featured.map(adaptMock);
+  const recommendedRail: DisplayJobCard[] = recommended.map(adaptMock);
+
+  type DisplayCompanyCard = { id: string; name: string; openJobs: number };
+  const hiringCompaniesDisplay: DisplayCompanyCard[] = [
+    ...(hiringState.kind === 'success' ? hiringState.data.items.map((c: HiringCompany) => ({ id: c.id, name: c.name, openJobs: c.openJobs })) : []),
+    ...mockHiringCompanies.map((c) => ({ id: c.id, name: c.name, openJobs: published.filter((j) => j.companyId === c.id).length })),
+  ];
+
+  const isSaved = (item: DisplayJobCard) => (item.isReal ? realSavedIds.has(item.id) : isSavedMock(item.id));
+  const toggleSave = (item: DisplayJobCard) =>
+    requireAuth(() => {
+      if (item.isReal) {
+        (realSavedIds.has(item.id) ? unsaveJob(item.id) : saveJob(item.id)).then(() => refetchRealSaved());
+        return;
+      }
+      toggleSaveMock(item.id);
+    }, { type: 'save_job', jobId: item.id });
+
+  const hasAnyJobs = newestState.kind === 'loading' || newestRail.length > 0;
 
   const submitSearch = () => router.push(query.trim() ? `/jobs/results?q=${encodeURIComponent(query.trim())}` : '/jobs/results');
 
@@ -58,9 +122,9 @@ export default function JobsHome() {
           </Pressable>
           <Pressable onPress={() => router.push('/jobs/saved')} style={{ position: 'relative' }}>
             <Icon name="heart" color="#fff" />
-            {savedJobs.length > 0 ? (
+            {savedBadgeCount > 0 ? (
               <View style={{ position: 'absolute', top: -5, left: -6, backgroundColor: '#fff', minWidth: 15, height: 15, borderRadius: 8, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 }}>
-                <Text style={{ fontSize: 9, fontWeight: '800', color: colors.signal }}>{savedJobs.length}</Text>
+                <Text style={{ fontSize: 9, fontWeight: '800', color: colors.signal }}>{savedBadgeCount}</Text>
               </View>
             ) : null}
           </Pressable>
@@ -102,7 +166,7 @@ export default function JobsHome() {
         </Pressable>
       </View>
 
-      {published.length === 0 ? (
+      {!hasAnyJobs ? (
         <View style={{ marginTop: spacing.s5 }}>
           <EmptyState
             icon={<Icon name="office" color={colors.ink3} size={26} />}
@@ -114,24 +178,24 @@ export default function JobsHome() {
         </View>
       ) : (
         <>
-          {recommended.length > 0 ? <JobRail title="مرشّحة لمهنتك" jobs={recommended} companies={companies} /> : null}
-          <JobRail title="أحدث الوظائف" jobs={published} companies={companies} moreLabel="الكل" onMore={() => router.push('/jobs/results')} />
-          {featured.length > 0 ? <JobRail title="وظائف مميزة" jobs={featured} companies={companies} /> : null}
-          {urgent.length > 0 ? <JobRail title="وظائف عاجلة" jobs={urgent} companies={companies} /> : null}
-          {nearby.length > 0 ? <JobRail title={`قريب منك — ${city}`} jobs={nearby} companies={companies} /> : null}
-          {remote.length > 0 ? <JobRail title="وظائف عن بُعد" jobs={remote} companies={companies} /> : null}
+          {recommendedRail.length > 0 ? <JobRail title="مرشّحة لمهنتك" items={recommendedRail} isSaved={isSaved} onToggleSave={toggleSave} /> : null}
+          <JobRail title="أحدث الوظائف" items={newestRail} isSaved={isSaved} onToggleSave={toggleSave} moreLabel="الكل" onMore={() => router.push('/jobs/results')} />
+          {featuredRail.length > 0 ? <JobRail title="وظائف مميزة" items={featuredRail} isSaved={isSaved} onToggleSave={toggleSave} /> : null}
+          {urgentRail.length > 0 ? <JobRail title="وظائف عاجلة" items={urgentRail} isSaved={isSaved} onToggleSave={toggleSave} /> : null}
+          {nearbyRail.length > 0 ? <JobRail title={`قريب منك — ${city}`} items={nearbyRail} isSaved={isSaved} onToggleSave={toggleSave} /> : null}
+          {remoteRail.length > 0 ? <JobRail title="وظائف عن بُعد" items={remoteRail} isSaved={isSaved} onToggleSave={toggleSave} /> : null}
 
-          {hiringCompanies.length > 0 ? (
+          {hiringCompaniesDisplay.length > 0 ? (
             <>
               <SectionHead title="شركات توظف الآن" />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: spacing.s4, alignItems: 'flex-start' }}>
-                {hiringCompanies.map((c) => (
+                {hiringCompaniesDisplay.map((c) => (
                   <Pressable key={c.id} onPress={() => router.push(`/jobs/company/${c.id}`)} style={{ width: 120, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, alignItems: 'center' }}>
                     <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center' }}>
                       <Icon name="office" size={20} color={colors.signal2} />
                     </View>
                     <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: '700', color: colors.ink, marginTop: 8, textAlign: 'center' }}>{c.name}</Text>
-                    <Text style={{ fontSize: 9.5, color: colors.ink3, marginTop: 2 }}>{published.filter((j) => j.companyId === c.id).length} وظيفة</Text>
+                    <Text style={{ fontSize: 9.5, color: colors.ink3, marginTop: 2 }}>{c.openJobs} وظيفة</Text>
                   </Pressable>
                 ))}
               </ScrollView>
@@ -186,44 +250,41 @@ function SectionHead({ title, sub, moreLabel, onMore }: { title: string; sub?: s
   );
 }
 
-function JobRail({ title, jobs, companies, moreLabel, onMore }: { title: string; jobs: Job[]; companies: ReturnType<typeof useAllCompanies>; moreLabel?: string; onMore?: () => void }) {
+function JobRail({ title, items, isSaved, onToggleSave, moreLabel, onMore }: {
+  title: string; items: DisplayJobCard[]; isSaved: (item: DisplayJobCard) => boolean; onToggleSave: (item: DisplayJobCard) => void;
+  moreLabel?: string; onMore?: () => void;
+}) {
   const router = useRouter();
   const { colors, radius, spacing } = useTheme();
-  const toggleSave = useJobsStore((s) => s.toggleSaveJob);
-  const isSaved = useJobsStore((s) => s.isJobSaved);
-  const requireAuth = useRequireAuth();
   return (
     <>
       <SectionHead title={title} moreLabel={moreLabel} onMore={onMore} />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: spacing.s4, alignItems: 'flex-start' }}>
-        {jobs.slice(0, 10).map((j) => {
-          const company = companies.find((c) => c.id === j.companyId);
-          return (
-            <Pressable key={j.id} onPress={() => router.push(`/jobs/${j.id}`)} style={{ width: 220, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s3 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center' }}>
-                  <Icon name="office" size={16} color={colors.signal2} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text numberOfLines={1} style={{ fontSize: 12, fontWeight: '700', color: colors.ink }}>{j.title}</Text>
-                  <Text numberOfLines={1} style={{ fontSize: 10, color: colors.ink3 }}>{company?.name ?? '—'}</Text>
-                </View>
-                <Pressable onPress={() => requireAuth(() => toggleSave(j.id), { type: 'save_job', jobId: j.id })}>
-                  <Icon name="heart" size={15} color={isSaved(j.id) ? colors.signal : colors.ink3} />
-                </Pressable>
+        {items.slice(0, 10).map((j) => (
+          <Pressable key={j.id} onPress={() => router.push(`/jobs/${j.id}`)} style={{ width: 220, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s3 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center' }}>
+                <Icon name="office" size={16} color={colors.signal2} />
               </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
-                <Pill>{j.city}</Pill>
-                {j.isUrgent ? <Pill tone="signal">عاجلة</Pill> : null}
+              <View style={{ flex: 1 }}>
+                <Text numberOfLines={1} style={{ fontSize: 12, fontWeight: '700', color: colors.ink }}>{j.title}</Text>
+                <Text numberOfLines={1} style={{ fontSize: 10, color: colors.ink3 }}>{j.companyName ?? '—'}</Text>
               </View>
-              {!j.salaryHidden && j.salaryMin ? (
-                <Text style={{ fontSize: 12, fontWeight: '700', color: colors.ink, marginTop: 8 }}>
-                  {j.salaryMin.toLocaleString('en-US')}{j.salaryMax ? ` - ${j.salaryMax.toLocaleString('en-US')}` : ''} ج.م
-                </Text>
-              ) : null}
-            </Pressable>
-          );
-        })}
+              <Pressable onPress={() => onToggleSave(j)}>
+                <Icon name="heart" size={15} color={isSaved(j) ? colors.signal : colors.ink3} />
+              </Pressable>
+            </View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
+              <Pill>{j.city}</Pill>
+              {j.isUrgent ? <Pill tone="signal">عاجلة</Pill> : null}
+            </View>
+            {!j.salaryHidden && j.salaryMin ? (
+              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.ink, marginTop: 8 }}>
+                {j.salaryMin.toLocaleString('en-US')}{j.salaryMax ? ` - ${j.salaryMax.toLocaleString('en-US')}` : ''} ج.م
+              </Text>
+            ) : null}
+          </Pressable>
+        ))}
       </ScrollView>
     </>
   );

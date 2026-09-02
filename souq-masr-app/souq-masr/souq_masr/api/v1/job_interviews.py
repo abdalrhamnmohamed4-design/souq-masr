@@ -85,6 +85,22 @@ def get_interview_for_application(application_id):
 
 
 @frappe.whitelist()
+def get_interviews_for_job(job_id):
+	"""صاحب الوظيفة بس — قائمة كل مقابلات المتقدّمين على وظيفة واحدة، في
+	استعلام واحد، بديل عن applicants.tsx بينادي get_interview_for_application
+	لكل متقدّم على حدة (N+1). مفاتيح الرجوع application_id عشان الموبايل
+	يعمل lookup سريع بالـapplication id لكل صف في القائمة."""
+	user = _current_user()
+	if not frappe.db.exists("Souq Masr Job", job_id):
+		frappe.throw(frappe._("Job not found"), frappe.DoesNotExistError)
+	if _job_owner(job_id) != user:
+		frappe.throw(frappe._("You do not own this job posting"), frappe.PermissionError)
+	rows = frappe.get_all("Souq Masr Job Interview", filters={"job": job_id}, fields=["name"])
+	items = [_serialize(frappe.get_doc("Souq Masr Job Interview", r.name)) for r in rows]
+	return {"items": items}
+
+
+@frappe.whitelist()
 def get_my_interviews(page=1, limit=20):
 	"""مقابلات المرشّح الحالي — كل المقابلات المرتبطة بطلباته هو."""
 	user = _current_user()

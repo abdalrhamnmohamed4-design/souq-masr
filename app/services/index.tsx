@@ -1,6 +1,10 @@
 /**
  * app/services/index.tsx — رئيسية "المهن والخدمات" (PART 25/43): تجربة
  * منفصلة تمامًا عن سوق الوظائف — حرفيين وخدمات، مش شركات.
+ *
+ * Phase 2B — Jobs + Services Mobile Wiring: "أحدث الخدمات" بقت دمج
+ * حقيقي (search_services) + mock محلي. "ملفي كمحترف" بيستخدم
+ * useMyProfessionalProfile (mock الأول، وإلا حقيقي) بدل فحص mock بس.
  */
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -11,18 +15,30 @@ import { Icon } from '@/components/Icon';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Pill } from '@/components/primitives/Pill';
 import { getServiceCategories } from '@/mock/jobs/trades';
-import { useAllServices, useJobsStore } from '@/store/useJobsStore';
+import { useApiResult } from '@/hooks/useApiResult';
+import { useMyProfessionalProfile } from '@/hooks/useMyProfessionalProfile';
+import { searchServices, type RealServiceSummary } from '@/services/serviceListingService';
+import { useAllServices } from '@/store/useJobsStore';
 import { useTheme } from '@/theme/ThemeProvider';
+
+type DisplayService = { id: string; title: string; price: number | null; priceType: string; areaLabel: string | null };
 
 export default function ServicesHome() {
   const router = useRouter();
   const { colors, spacing, radius, brandDark } = useTheme();
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
-  const services = useAllServices();
-  const myProfessionalProfile = useJobsStore((s) => s.professionalProfile);
+  const mockServices = useAllServices();
+  const myProfile = useMyProfessionalProfile();
 
-  const active = services.filter((s) => s.status === 'active');
+  const mockActive = mockServices.filter((s) => s.status === 'active');
+  const { state: realState } = useApiResult(() => searchServices({ sort: 'newest', limit: 10 }), []);
+  const realItems = realState.kind === 'success' ? realState.data.items : [];
+
+  const active: DisplayService[] = [
+    ...realItems.map((s: RealServiceSummary): DisplayService => ({ id: s.id, title: s.title, price: s.price, priceType: s.priceType, areaLabel: s.serviceAreas[0] ?? null })),
+    ...mockActive.map((s): DisplayService => ({ id: s.id, title: s.title, price: s.price ?? null, priceType: s.priceType, areaLabel: s.serviceAreas[0] ?? null })),
+  ];
 
   const submitSearch = () => router.push(query.trim() ? `/services/results?q=${encodeURIComponent(query.trim())}` : '/services/results');
 
@@ -84,9 +100,11 @@ export default function ServicesHome() {
                     {s.priceType === 'starting_from' ? 'يبدأ من ' : ''}{s.price.toLocaleString('en-US')} ج.م
                   </Text>
                 ) : null}
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-                  {s.serviceAreas.slice(0, 1).map((a) => <Pill key={a}>{a}</Pill>)}
-                </View>
+                {s.areaLabel ? (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                    <Pill>{s.areaLabel}</Pill>
+                  </View>
+                ) : null}
               </Pressable>
             ))}
           </ScrollView>
@@ -96,10 +114,10 @@ export default function ServicesHome() {
       <View style={{ paddingHorizontal: spacing.s4, marginTop: spacing.s5, gap: spacing.s2 }}>
         <Pressable onPress={() => router.push('/services/profile')} style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s4, flexDirection: 'row', alignItems: 'center', gap: spacing.s3 }}>
           <Icon name="id" color={colors.ink2} />
-          <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '700', color: colors.ink2 }}>{myProfessionalProfile ? 'ملفي كمحترف' : 'إنشاء ملف محترف'}</Text>
+          <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '700', color: colors.ink2 }}>{myProfile.any ? 'ملفي كمحترف' : 'إنشاء ملف محترف'}</Text>
           <Icon name="chev-l" size={15} color={colors.ink3} />
         </Pressable>
-        {myProfessionalProfile ? (
+        {myProfile.any ? (
           <>
             <Pressable onPress={() => router.push('/services/professional/me')} style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s4, flexDirection: 'row', alignItems: 'center', gap: spacing.s3 }}>
               <Icon name="eye" color={colors.ink2} />

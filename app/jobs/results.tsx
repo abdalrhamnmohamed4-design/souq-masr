@@ -1,22 +1,41 @@
 /**
  * app/jobs/results.tsx — بحث وفلترة الوظائف (PART 30). فلاتر حقيقية:
  * قسم، مهنة، مدينة، راتب، خبرة، نوع دوام، عن بُعد، شركة.
+ *
+ * Phase 2B — Jobs + Services Mobile Wiring: فلترة/ترتيب/تحميل-المزيد
+ * حقيقية سيرفريًا (search_jobs مع sort/is_urgent الجداد) — نفس نمط
+ * app/results.tsx (السوق العام) بالظبط: تراكم يدوي لـ"تحميل المزيد"،
+ * مش استبدال. وظائف mock محلية لسه بتتفلتر وتتبحث client-side وتتلحق في
+ * آخر القايمة (مفيش عدّاد/صفحات حقيقية ليها — مجموعة صغيرة قديمة).
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
 import { Pill } from '@/components/primitives/Pill';
 import { Button } from '@/components/primitives/Button';
 import { getJobCategories, getJobCategory } from '@/mock/jobs/categories';
 import { matchesQuery } from '@/lib/search';
+import { useApiResult } from '@/hooks/useApiResult';
 import { useRequireAuth } from '@/lib/auth';
-import { CAREER_LEVEL_LABELS, WORK_TYPE_LABELS, type CareerLevel, type Job, type WorkType } from '@/mock/jobs/types';
+import { CAREER_LEVEL_LABELS, WORK_TYPE_LABELS, type CareerLevel, type WorkType } from '@/mock/jobs/types';
+import { getMySavedJobs, saveJob, unsaveJob } from '@/services/savedJobService';
+import { searchJobs, type JobsSort, type RealJobSummary } from '@/services/jobService';
 import { useAllCompanies, useAllJobs, useJobsStore } from '@/store/useJobsStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
-const SORTS = ['الأحدث', 'الأعلى راتبًا', 'الأقل خبرة مطلوبة'];
+const SORTS: { key: JobsSort; label: string }[] = [
+  { key: 'newest', label: 'الأحدث' },
+  { key: 'salary_desc', label: 'الأعلى راتبًا' },
+  { key: 'experience_asc', label: 'الأقل خبرة مطلوبة' },
+];
+
+type DisplayJobRow = {
+  id: string; title: string; companyName: string | null; city: string; workType: WorkType;
+  remote: boolean; isUrgent: boolean; salaryMin: number | null; salaryMax: number | null; salaryHidden: boolean; isReal: boolean;
+};
 
 export default function JobsResults() {
   const params = useLocalSearchParams<{ q?: string; category?: string; workType?: string }>();
@@ -25,13 +44,13 @@ export default function JobsResults() {
   const insets = useSafeAreaInsets();
   const allJobs = useAllJobs();
   const companies = useAllCompanies();
-  const toggleSave = useJobsStore((s) => s.toggleSaveJob);
-  const isSaved = useJobsStore((s) => s.isJobSaved);
+  const toggleSaveMock = useJobsStore((s) => s.toggleSaveJob);
+  const isSavedMock = useJobsStore((s) => s.isJobSaved);
   const requireAuth = useRequireAuth();
 
   const [query, setQuery] = useState(params.q ?? '');
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [sort, setSort] = useState('الأحدث');
+  const [sort, setSort] = useState<JobsSort>('newest');
   const [categoryId, setCategoryId] = useState<string | null>(params.category ?? null);
   const [workType, setWorkType] = useState<WorkType | null>((params.workType as WorkType) ?? null);
   const [careerLevel, setCareerLevel] = useState<CareerLevel | null>(null);
@@ -39,7 +58,57 @@ export default function JobsResults() {
 
   const category = categoryId ? getJobCategory(categoryId) : undefined;
 
-  const results = useMemo(() => {
+  const { state: realSavedState, refetch: refetchRealSaved } = useApiResult(() => getMySavedJobs(), []);
+  const realSavedIds = new Set(realSavedState.kind === 'success' ? realSavedState.data.items.map((j) => j.id) : []);
+
+  const { state: searchState, refetch: refetchSearch } = useApiResult(
+    () =>
+      searchJobs({
+        q: query.trim() || undefined,
+        categoryKey: categoryId ?? undefined,
+        workType: workType ?? undefined,
+        careerLevel: careerLevel ?? undefined,
+        remote: remoteOnly || undefined,
+        sort,
+        page: 1,
+        limit: 20,
+      }),
+    [query, categoryId, workType, careerLevel, remoteOnly, sort],
+  );
+
+  const [additionalItems, setAdditionalItems] = useState<RealJobSummary[]>([]);
+  const [nextPage, setNextPage] = useState(2);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
+
+  useEffect(() => {
+    setAdditionalItems([]);
+    setNextPage(2);
+    setLoadMoreFailed(false);
+  }, [query, categoryId, workType, careerLevel, remoteOnly, sort]);
+
+  const baseRealItems = searchState.kind === 'success' ? searchState.data.items : [];
+  const totalReal = searchState.kind === 'success' ? searchState.data.total : 0;
+  const realItems = [...baseRealItems, ...additionalItems];
+  const hasMore = realItems.length < totalReal;
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    setLoadMoreFailed(false);
+    const r = await searchJobs({
+      q: query.trim() || undefined, categoryKey: categoryId ?? undefined, workType: workType ?? undefined,
+      careerLevel: careerLevel ?? undefined, remote: remoteOnly || undefined, sort, page: nextPage, limit: 20,
+    });
+    setLoadingMore(false);
+    if (r.status !== 'success') {
+      setLoadMoreFailed(true);
+      return;
+    }
+    setAdditionalItems((prev) => [...prev, ...r.data.items]);
+    setNextPage((p) => p + 1);
+  };
+
+  const mockResults = useMemo(() => {
     let r = allJobs.filter((j) => j.status === 'published');
     if (query.trim()) {
       r = r.filter((j) => {
@@ -51,12 +120,34 @@ export default function JobsResults() {
     if (workType) r = r.filter((j) => j.workType === workType);
     if (careerLevel) r = r.filter((j) => j.careerLevel === careerLevel);
     if (remoteOnly) r = r.filter((j) => j.remote);
-    if (sort === 'الأعلى راتبًا') r.sort((a, b) => (b.salaryMax ?? b.salaryMin ?? 0) - (a.salaryMax ?? a.salaryMin ?? 0));
-    if (sort === 'الأقل خبرة مطلوبة') r.sort((a, b) => (a.experienceYearsMin ?? 0) - (b.experienceYearsMin ?? 0));
+    if (sort === 'salary_desc') r.sort((a, b) => (b.salaryMax ?? b.salaryMin ?? 0) - (a.salaryMax ?? a.salaryMin ?? 0));
+    if (sort === 'experience_asc') r.sort((a, b) => (a.experienceYearsMin ?? 0) - (b.experienceYearsMin ?? 0));
     return r;
   }, [allJobs, companies, query, categoryId, workType, careerLevel, remoteOnly, sort]);
 
+  const results: DisplayJobRow[] = [
+    ...realItems.map((j): DisplayJobRow => ({
+      id: j.id, title: j.title, companyName: null, city: j.city, workType: j.workType as WorkType, remote: j.remote,
+      isUrgent: j.isUrgent, salaryMin: j.salaryMin, salaryMax: j.salaryMax, salaryHidden: j.salaryHidden, isReal: true,
+    })),
+    ...mockResults.map((j): DisplayJobRow => ({
+      id: j.id, title: j.title, companyName: companies.find((c) => c.id === j.companyId)?.name ?? null, city: j.city,
+      workType: j.workType, remote: j.remote, isUrgent: j.isUrgent, salaryMin: j.salaryMin ?? null, salaryMax: j.salaryMax ?? null,
+      salaryHidden: j.salaryHidden, isReal: false,
+    })),
+  ];
+
   const activeCount = (categoryId ? 1 : 0) + (workType ? 1 : 0) + (careerLevel ? 1 : 0) + (remoteOnly ? 1 : 0);
+
+  const toggleSave = (item: DisplayJobRow) =>
+    requireAuth(() => {
+      if (item.isReal) {
+        (realSavedIds.has(item.id) ? unsaveJob(item.id) : saveJob(item.id)).then(() => refetchRealSaved());
+        return;
+      }
+      toggleSaveMock(item.id);
+    }, { type: 'save_job', jobId: item.id });
+  const isSaved = (item: DisplayJobRow) => (item.isReal ? realSavedIds.has(item.id) : isSavedMock(item.id));
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.paper }}>
@@ -85,19 +176,31 @@ export default function JobsResults() {
 
       <Text style={{ fontSize: 11, color: colors.ink3, paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>{results.length} وظيفة</Text>
 
+      {searchState.kind !== 'success' && searchState.kind !== 'loading' && searchState.kind !== 'empty' ? (
+        <View style={{ paddingHorizontal: spacing.s5, marginBottom: spacing.s3 }}>
+          <ApiStateView state={searchState} onRetry={refetchSearch} />
+        </View>
+      ) : null}
+
       <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.s5, paddingBottom: 40, gap: spacing.s3 }}>
-        {results.length === 0 ? (
+        {searchState.kind === 'loading' && results.length === 0 ? (
+          <ApiStateView state={searchState} />
+        ) : results.length === 0 ? (
           <Text style={{ textAlign: 'center', color: colors.ink3, fontSize: 12.5, paddingTop: 40 }}>مفيش وظائف مطابقة.</Text>
         ) : (
-          results.map((j) => (
-            <JobRow
-              key={j.id}
-              job={j}
-              company={companies.find((c) => c.id === j.companyId)}
-              onSave={() => requireAuth(() => toggleSave(j.id), { type: 'save_job', jobId: j.id })}
-              saved={isSaved(j.id)}
-            />
-          ))
+          <>
+            {results.map((j) => (
+              <JobRow key={j.id} job={j} onSave={() => toggleSave(j)} saved={isSaved(j)} />
+            ))}
+            {hasMore ? (
+              <Pressable onPress={loadMore} disabled={loadingMore} style={{ alignItems: 'center', paddingVertical: 14 }}>
+                {loadingMore ? <ActivityIndicator size="small" color={colors.signal} /> : <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.signal }}>تحميل المزيد</Text>}
+              </Pressable>
+            ) : null}
+            {loadMoreFailed ? (
+              <Text style={{ textAlign: 'center', color: colors.danger, fontSize: 11.5, paddingTop: 6, paddingBottom: 10 }}>تعذّر تحميل المزيد، جرّب تاني.</Text>
+            ) : null}
+          </>
         )}
       </ScrollView>
 
@@ -126,7 +229,7 @@ export default function JobsResults() {
               </FilterGroup>
               <FilterGroup title="الترتيب">
                 {SORTS.map((s) => (
-                  <FilterOpt key={s} label={s} active={sort === s} onPress={() => setSort(s)} />
+                  <FilterOpt key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
                 ))}
               </FilterGroup>
             </ScrollView>
@@ -145,7 +248,7 @@ export default function JobsResults() {
   );
 }
 
-function JobRow({ job, company, onSave, saved }: { job: Job; company?: { name: string }; onSave: () => void; saved: boolean }) {
+function JobRow({ job, onSave, saved }: { job: DisplayJobRow; onSave: () => void; saved: boolean }) {
   const router = useRouter();
   const { colors, spacing, radius } = useTheme();
   return (
@@ -156,14 +259,14 @@ function JobRow({ job, company, onSave, saved }: { job: Job; company?: { name: s
         </View>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>{job.title}</Text>
-          <Text style={{ fontSize: 11, color: colors.ink3, marginTop: 2 }}>{company?.name ?? '—'} · {job.city}</Text>
+          <Text style={{ fontSize: 11, color: colors.ink3, marginTop: 2 }}>{job.companyName ?? '—'} · {job.city}</Text>
         </View>
         <Pressable onPress={onSave}>
           <Icon name="heart" size={17} color={saved ? colors.signal : colors.ink3} />
         </Pressable>
       </View>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-        <Pill>{WORK_TYPE_LABELS[job.workType]}</Pill>
+        <Pill>{WORK_TYPE_LABELS[job.workType] ?? job.workType}</Pill>
         {job.remote ? <Pill tone="signal">عن بُعد</Pill> : null}
         {job.isUrgent ? <Pill tone="gold">عاجلة</Pill> : null}
         {!job.salaryHidden && job.salaryMin ? (

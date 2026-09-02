@@ -74,6 +74,20 @@ def _paginate(page, limit):
 	return page, limit, (page - 1) * limit
 
 
+# Jobs + Services mobile wiring pass — app/jobs/results.tsx already has a
+# real "الترتيب" (sort) picker in its UI (الأحدث/الأعلى راتبًا/الأقل خبرة
+# مطلوبة) that search_jobs never actually supported server-side before
+# this pass — the same _sort_order_by lookup-table pattern already used
+# by listings.py's search_listings, applied here for the same reason
+# (avoid reproducing sort logic client-side once the backend can do it).
+def _sort_order_by(sort):
+	return {
+		"newest": "creation desc",
+		"salary_desc": "salary_max desc, salary_min desc, creation desc",
+		"experience_asc": "experience_years_min asc, creation desc",
+	}.get(sort, "creation desc")
+
+
 def _serialize(doc):
 	is_owner = frappe.session.user == doc.owner
 	return {
@@ -293,7 +307,7 @@ def get_my_jobs(status=None, page=1, limit=PAGE_SIZE_DEFAULT):
 
 
 @frappe.whitelist(allow_guest=True)
-def search_jobs(q=None, category_key=None, work_type=None, career_level=None, city=None, remote=None, salary_min=None, page=1, limit=PAGE_SIZE_DEFAULT):
+def search_jobs(q=None, category_key=None, work_type=None, career_level=None, city=None, remote=None, salary_min=None, is_urgent=None, sort=None, page=1, limit=PAGE_SIZE_DEFAULT):
 	page, limit, offset = _paginate(page, limit)
 	filters = {"status": "published"}
 	if category_key:
@@ -308,6 +322,8 @@ def search_jobs(q=None, category_key=None, work_type=None, career_level=None, ci
 		filters["remote"] = 1
 	if salary_min not in (None, ""):
 		filters["salary_max"] = [">=", cint(salary_min)]
+	if is_urgent not in (None, "", "0", 0):
+		filters["is_urgent"] = 1
 
 	job_names = None
 	if q and q.strip():
@@ -319,7 +335,7 @@ def search_jobs(q=None, category_key=None, work_type=None, career_level=None, ci
 		filters["name"] = ["in", list(job_names)]
 
 	total = frappe.db.count("Souq Masr Job", filters)
-	rows = frappe.get_all("Souq Masr Job", filters=filters, fields=SUMMARY_FIELDS, order_by="creation desc", limit_start=offset, limit_page_length=limit)
+	rows = frappe.get_all("Souq Masr Job", filters=filters, fields=SUMMARY_FIELDS, order_by=_sort_order_by(sort), limit_start=offset, limit_page_length=limit)
 	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
 
 
@@ -332,6 +348,55 @@ def get_jobs_by_company(company_id, page=1, limit=PAGE_SIZE_DEFAULT):
 	total = frappe.db.count("Souq Masr Job", filters)
 	rows = frappe.get_all("Souq Masr Job", filters=filters, fields=SUMMARY_FIELDS, order_by="creation desc", limit_start=offset, limit_page_length=limit)
 	return {"items": [_serialize_summary(r) for r in rows], "total": total, "page": page, "limit": limit}
+
+
+# app/jobs/index.tsx's "شركات توظف الآن" rail — previously had no way to
+# discover companies with active published jobs without fetching every
+# job client-side and de-duplicating by company (an N+1-shaped client
+# join). Groups by company server-side instead.
+@frappe.whitelist(allow_guest=True)
+def get_hiring_companies(limit=10):
+	limit = min(cint(limit) or 10, 50)
+	rows = frappe.db.sql(
+		"""
+		select company, count(name) as open_jobs
+		from `tabSouq Masr Job`
+		where status = 'published'
+		group by company
+		order by open_jobs desc, company desc
+		limit %(limit)s
+		""",
+		{"limit": limit},
+		as_dict=True,
+	)
+	company_ids = [r.company for r in rows if r.company]
+	if not company_ids:
+		return {"items": []}
+	companies = {
+		c.name: c
+		for c in frappe.get_all(
+			"Souq Masr Company",
+			filters={"name": ["in", company_ids]},
+			fields=["name", "name1", "logo", "industry", "city", "verification"],
+		)
+	}
+	items = []
+	for r in rows:
+		c = companies.get(r.company)
+		if not c:
+			continue
+		items.append(
+			{
+				"id": c.name,
+				"name": c.name1,
+				"logo": c.logo,
+				"industry": c.industry,
+				"city": c.city,
+				"verification": c.verification,
+				"openJobs": r.open_jobs,
+			}
+		)
+	return {"items": items}
 
 
 @frappe.whitelist(allow_guest=True)

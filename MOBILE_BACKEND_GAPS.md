@@ -17,14 +17,14 @@ souq_masr/api/v1/calls.py        — 7 endpoints (integrated, Phase 2B Slice 4/4
 souq_masr/api/v1/reviews.py      — 5 endpoints (integrated, Phase 2B Reviews — seller reviews only)
 souq_masr/api/v1/sellers.py      — 1 endpoint (integrated, Phase 2B Reviews — get_seller_profile)
 souq_masr/api/v1/companies.py    — 3 endpoints (integrated, Phase 2B Jobs)
-souq_masr/api/v1/jobs.py         — 10 endpoints (integrated, Phase 2B Jobs — core loop wired; my-jobs/results/discovery mobile screens not yet migrated, see below)
-souq_masr/api/v1/job_applications.py — 7 endpoints (integrated, Phase 2B Jobs — includes private CV handling)
-souq_masr/api/v1/job_interviews.py — 3 endpoints (integrated, Phase 2B Jobs)
-souq_masr/api/v1/saved_jobs.py   — 4 endpoints (integrated, Phase 2B Jobs)
+souq_masr/api/v1/jobs.py         — 12 endpoints (integrated, Phase 2B Jobs; my-jobs/results/discovery mobile screens migrated in Phase 2B — Jobs + Services Mobile Wiring, see below)
+souq_masr/api/v1/job_applications.py — 7 endpoints (integrated, Phase 2B Jobs — includes private CV handling; get_my_applications enriched with job/company info in Phase 2B — Jobs + Services Mobile Wiring)
+souq_masr/api/v1/job_interviews.py — 4 endpoints (integrated, Phase 2B Jobs; +1 batched get_interviews_for_job in Phase 2B — Jobs + Services Mobile Wiring)
+souq_masr/api/v1/saved_jobs.py   — 4 endpoints (integrated, Phase 2B Jobs; get_my_saved_jobs now returns full job objects, Phase 2B — Jobs + Services Mobile Wiring)
 souq_masr/api/v1/career_profile.py — 3 endpoints (integrated, Phase 2B Jobs — scalar fields + resume only, see below)
 souq_masr/api/v1/content_reports.py — 2 endpoints (integrated, Phase 2B Jobs — now also covers Services)
 souq_masr/api/v1/professional_profiles.py — 4 endpoints (integrated, Phase 2B Services)
-souq_masr/api/v1/services.py         — 8 endpoints (integrated, Phase 2B Services — core loop wired; my-services/results/discovery mobile screens not yet migrated)
+souq_masr/api/v1/services.py         — 9 endpoints (integrated, Phase 2B Services; my-services/results/discovery mobile screens migrated in Phase 2B — Jobs + Services Mobile Wiring, search_services gained trade_key/sort)
 souq_masr/api/v1/notifications.py    — 5 endpoints + internal notify() helper (integrated, Phase 2B Notifications — server-side + in-app center only, push transport not built, see below)
 souq_masr/api/v1/payments.py         — 8 endpoints (integrated, Phase 2B Payments — real manual-transfer + admin-review model, no gateway, see below)
 ```
@@ -189,22 +189,26 @@ scoped Career Profile, a shared content-report system) is **built and
 live-tested** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s Phase 2B
 Jobs section for the scope decisions (deep CV builder / Job Alerts /
 Company reviews deliberately deferred, documented there), the CV-privacy
-design, and the full live HTTP test results. Mobile is migrated for the
-core loop only.
+design, and the full live HTTP test results. Mobile was migrated for
+the core loop first, then for management/discovery (`my-jobs.tsx`,
+`applicants.tsx`, `applications.tsx`, `saved.tsx`, `company/[id].tsx`,
+`index.tsx`, `results.tsx`) in the follow-up "Phase 2B — Jobs +
+Services Mobile Wiring" pass — see
+`MOBILE_BACKEND_INTEGRATION_REPORT.md`'s section of that name.
 
 | Feature | Status | Auth | Priority |
 |---|---|---|---|
 | Company profile (create/update/public view) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.companies.*` — one company per owner (upsert). `app/jobs/my-company.tsx` wired (a pre-existing local company keeps editing locally, unchanged). | Auth (create/edit) / Guest (view) | Done |
 | Post/edit/pause/activate/close/delete a job | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.jobs.*`. `app/jobs/post.tsx` wired for create and edit (real `JOB-#####` ids fetched and hydrated); `app/jobs/[id].tsx` wired for viewing. | Auth (owner only for mutations) / Guest (view) | Done for post/edit/view |
-| Manage my jobs / applicants / interviews (`my-jobs.tsx`, `applicants.tsx`) | ⏳ **Backend built+tested** (`get_my_jobs`, `get_applications_for_job`, `set_application_status`, `schedule_interview`) — **mobile screens not yet migrated**, still reading local mock data | Auth (owner only) | High (natural next pass) |
+| Manage my jobs / applicants / interviews (`my-jobs.tsx`, `applicants.tsx`) | ✅ **Built, live-tested, wired** (Phase 2B — Jobs + Services Mobile Wiring). `get_my_jobs`, `get_applications_for_job`, `set_application_status`, `schedule_interview`, and the new batched `get_interviews_for_job` all wired; real jobs merged with legacy mock, not replacing it. | Auth (owner only) | Done |
 | Apply to a job | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.job_applications.apply_to_job` — idempotent, real uploaded CV (`is_private=1`) instead of the mock's "generated resume" option. `app/jobs/apply/[id].tsx` wired. | Auth | Done |
-| My applications / saved jobs (`applications.tsx`, `saved.tsx`) | ⏳ **Backend built+tested** (`get_my_applications`, `get_my_saved_jobs`) — **mobile screens not yet migrated** | Auth | Medium |
-| Company public profile + its jobs (`company/[id].tsx`) | ⏳ **Backend built+tested** (`get_company`, `get_jobs_by_company`) — **mobile screen not yet migrated**; company reviews specifically remain out of scope (deferred to Services) | Guest | Medium |
-| Jobs home / search (`index.tsx`, `results.tsx`) | ⏳ **Backend built+tested** (`search_jobs`) — **mobile screens not yet migrated**, so real jobs posted via the now-real `post.tsx` are not yet discoverable through these two screens specifically (still reachable via a direct id, e.g. from a share link) | Guest | High (closes the discovery gap) |
-| CV privacy (résumé access restricted to candidate/employer) | ✅ **Built, live-tested** — 8-group test suite including a real unauthorized-stranger-gets-403 case, see integration report §5 | Auth | Done |
+| My applications / saved jobs (`applications.tsx`, `saved.tsx`) | ✅ **Built, live-tested, wired** (Phase 2B — Jobs + Services Mobile Wiring). `get_my_applications` now server-enriches each row with `job_title`/`company_name` (no more client-side join); `get_my_saved_jobs` now returns full job objects, not bare ids. | Auth | Done |
+| Company public profile + its jobs (`company/[id].tsx`) | ✅ **Built, live-tested, wired** (Phase 2B — Jobs + Services Mobile Wiring). `get_company` + `get_jobs_by_company` wired; company reviews specifically remain out of scope (still deferred, see below) — section renders honestly empty, rate action hidden. | Guest | Done (loop), reviews excepted |
+| Jobs home / search (`index.tsx`, `results.tsx`) | ✅ **Built, live-tested, wired** (Phase 2B — Jobs + Services Mobile Wiring). `search_jobs` gained `sort`/`is_urgent` params for this pass; every rail (newest/urgent/remote/nearby) and the full filter/sort/pagination search screen call it directly, merged with legacy mock. New `get_hiring_companies` powers the "hiring now" rail (server-side aggregation, not a full job-table client fetch). Featured/recommended rails stay mock-only (no real `is_featured` field, no real profession-match field). | Guest | Done |
+| CV privacy (résumé access restricted to candidate/employer) | ✅ **Built, live-tested** — 8-group test suite including a real unauthorized-stranger-gets-403 case, see integration report §5. Re-verified in the Jobs+Services mobile wiring pass: `get_applications_for_job` never returns a raw resume URL/field, only `has_resume: bool`; no file-viewer UI built yet for employers to download the CV mobile-side (backend `get_application_resume` works, base64, candidate-or-employer only — disclosed gap, not a fabricated link). | Auth | Done (API) / mobile download UI still pending |
 | Career Profile | ✅ **Built, live-tested, wired at the API level** — scalar fields + one résumé file only (deep CV builder deferred, see integration report §1). Not yet wired into `app/jobs/profile.tsx` (that screen stays mock, by design, until/unless the deep builder itself is migrated) | Auth (owner-only, always) | Scoped Done |
-| Job Alerts | ⏳ Not built — deferred, separable follow-up | Auth | Low |
-| Company/Professional reviews | ⏳ Not built — deferred again from the Services slice (see Phase 2H below); reporting works, rating does not | Auth (create) / Guest (list) | Medium |
+| Job Alerts | ⏳ Not built — deferred, separable follow-up. Explicitly out of scope for the Jobs+Services mobile wiring pass too (on that pass's own "DO NOT start" list). | Auth | Low |
+| Company/Professional reviews | ⏳ Not built — deferred again from the Services slice (see Phase 2H below); reporting works, rating does not. Explicitly out of scope for the Jobs+Services mobile wiring pass too (on that pass's own "DO NOT start" list) — `company/[id].tsx`'s review section was migrated to render honestly empty for real companies rather than left mock, but the underlying rating system itself was not built. | Auth (create) / Guest (list) | Medium |
 
 ## Phase 2H — Services
 
@@ -212,16 +216,20 @@ core loop only.
 is **built and live-tested** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s
 Phase 2B Services section for the scope decisions (real chat integration
 and real Favorites deliberately not connected, documented there) and the
-full live HTTP test results. Mobile is migrated for the core loop only.
+full live HTTP test results. Mobile was migrated for the core loop
+first, then for management/discovery (`my-services.tsx`, `index.tsx`,
+`results.tsx`) in the follow-up "Phase 2B — Jobs + Services Mobile
+Wiring" pass — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s section of
+that name.
 
 | Feature | Status | Auth | Priority |
 |---|---|---|---|
 | Professional profile (create/update/public view) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.professional_profiles.*` — one profile per owner (upsert), phone shown publicly by design (business-card model, same as Company). `app/services/profile.tsx` wired (pre-existing local profile keeps editing locally, unchanged). | Auth (create/edit) / Guest (view) | Done |
 | Post/edit/pause/activate/delete a service | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.services.*`. `app/services/post.tsx` wired for create and edit; `app/services/[id].tsx` wired for viewing. | Auth (owner only for mutations) / Guest (view) | Done for post/edit/view |
 | Provider public profile + their services (`professional/[id].tsx`) | ✅ **Built, live-tested, wired** for real provider ids. Reviews section shows honestly empty (rating deferred, see below) rather than mixing in mock data. | Guest | Done (loop), reviews excepted |
-| My services / discovery / search (`my-services.tsx`, `index.tsx`, `results.tsx`) | ⏳ **Backend built+tested** (`get_my_services`, `search_services`) — **mobile screens not yet migrated** | Auth (my-services) / Guest (discovery) | High (closes the discovery gap, same as Jobs) |
-| Favorites for services | ⏳ Not built — the shared local `favorites` mechanism continues (disclosed since Slice 3); a normalized `Souq Masr Service Favorite` table is a small, well-understood follow-up | Auth | Low |
-| Contact a provider via real chat | ⏳ Not built — would need `Souq Masr Conversation.listing` broadened to a Dynamic Link across Listings/Services, out of scope for this pass (risk to an already-shipped DocType); native dialer/WhatsApp links remain the only contact method, unchanged from the pre-existing mock UI | — | Medium |
+| My services / discovery / search (`my-services.tsx`, `index.tsx`, `results.tsx`) | ✅ **Built, live-tested, wired** (Phase 2B — Jobs + Services Mobile Wiring). `get_my_services` wired into `my-services.tsx`; `search_services` gained `trade_key`/`sort` params for this pass and now backs both the home rail and the full filter/sort/pagination search screen, merged with legacy mock. "Matching professional" search stays mock-only — no real professional-search-by-query endpoint exists (disclosed gap, building one would be a new marketplace feature). | Auth (my-services) / Guest (discovery) | Done (discovery) / professional-search still mock |
+| Favorites for services | ⏳ Not built — the shared local `favorites` mechanism continues (disclosed since Slice 3); a normalized `Souq Masr Service Favorite` table is a small, well-understood follow-up. Re-confirmed out of scope in the Jobs+Services mobile wiring pass per that pass's own explicit instruction to reuse the existing shared mechanism rather than invent a new one. | Auth | Low |
+| Contact a provider via real chat | ⏳ Not built — would need `Souq Masr Conversation.listing` broadened to a Dynamic Link across Listings/Services, out of scope for this pass (risk to an already-shipped DocType); native dialer/WhatsApp links remain the only contact method, unchanged from the pre-existing mock UI. Re-confirmed in the Jobs+Services mobile wiring pass: `app/services/[id].tsx` has no chat entry point at all, so there was nothing new to wire. | — | Medium |
 | Professional/Service reviews | ⏳ Not built — deferred a second time from this slice too; `content_reports.py`'s reporting already works for both target types | Auth (create) / Guest (list) | Medium |
 
 ## Phase 2I — Notifications

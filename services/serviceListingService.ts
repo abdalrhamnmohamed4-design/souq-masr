@@ -122,8 +122,23 @@ export async function getMyServices(status?: ServiceStatus, page = 1, limit = 20
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total } };
 }
 
-export async function searchServices(q?: string, categoryKey?: string, priceType?: ServicePriceType, page = 1, limit = 20): Promise<ApiResult<{ items: RealServiceSummary[]; total: number }>> {
-  const r = await frappeGet<{ items: any[]; total: number }>(`${NS}.search_services`, { q, category_key: categoryKey, price_type: priceType, page, limit });
+export type ServicesSort = 'newest' | 'price_asc' | 'price_desc';
+
+export type SearchServicesInput = {
+  q?: string;
+  categoryKey?: string;
+  tradeKey?: string;
+  priceType?: ServicePriceType;
+  sort?: ServicesSort;
+  page?: number;
+  limit?: number;
+};
+
+export async function searchServices(input: SearchServicesInput): Promise<ApiResult<{ items: RealServiceSummary[]; total: number }>> {
+  const r = await frappeGet<{ items: any[]; total: number }>(`${NS}.search_services`, {
+    q: input.q, category_key: input.categoryKey, trade_key: input.tradeKey, price_type: input.priceType,
+    sort: input.sort, page: input.page ?? 1, limit: input.limit ?? 20,
+  });
   if (r.status !== 'success') return r;
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total } };
 }

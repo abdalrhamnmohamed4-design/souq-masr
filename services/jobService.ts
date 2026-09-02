@@ -81,7 +81,7 @@ function adaptFull(raw: any): RealJob {
   };
 }
 
-function adaptSummary(raw: any): RealJobSummary {
+export function adaptSummary(raw: any): RealJobSummary {
   return {
     id: raw.id, title: raw.title, company: raw.company, categoryKey: raw.category_key,
     workType: raw.work_type, careerLevel: raw.career_level, city: raw.city, remote: raw.remote,
@@ -187,6 +187,8 @@ export async function getMyJobs(status?: JobStatus, page = 1, limit = 20): Promi
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total } };
 }
 
+export type JobsSort = 'newest' | 'salary_desc' | 'experience_asc';
+
 export type SearchJobsInput = {
   q?: string;
   categoryKey?: string;
@@ -195,6 +197,8 @@ export type SearchJobsInput = {
   city?: string;
   remote?: boolean;
   salaryMin?: number;
+  isUrgent?: boolean;
+  sort?: JobsSort;
   page?: number;
   limit?: number;
 };
@@ -203,10 +207,35 @@ export async function searchJobs(input: SearchJobsInput): Promise<ApiResult<{ it
   const r = await frappeGet<{ items: any[]; total: number }>(`${NS}.search_jobs`, {
     q: input.q, category_key: input.categoryKey, work_type: input.workType, career_level: input.careerLevel,
     city: input.city, remote: input.remote ? 1 : undefined, salary_min: input.salaryMin,
+    is_urgent: input.isUrgent ? 1 : undefined, sort: input.sort,
     page: input.page ?? 1, limit: input.limit ?? 20,
   });
   if (r.status !== 'success') return r;
   return { status: 'success', data: { items: r.data.items.map(adaptSummary), total: r.data.total } };
+}
+
+export type HiringCompany = {
+  id: string;
+  name: string;
+  logo: string | null;
+  industry: string | null;
+  city: string | null;
+  verification: 'unverified' | 'pending' | 'verified' | 'rejected';
+  openJobs: number;
+};
+
+export async function getHiringCompanies(limit = 10): Promise<ApiResult<{ items: HiringCompany[] }>> {
+  const r = await frappeGet<{ items: any[] }>(`${NS}.get_hiring_companies`, { limit });
+  if (r.status !== 'success') return r;
+  return {
+    status: 'success',
+    data: {
+      items: r.data.items.map((c) => ({
+        id: c.id, name: c.name, logo: c.logo, industry: c.industry, city: c.city,
+        verification: c.verification, openJobs: c.openJobs,
+      })),
+    },
+  };
 }
 
 export async function getJobsByCompany(companyId: string, page = 1, limit = 20): Promise<ApiResult<{ items: RealJobSummary[]; total: number }>> {

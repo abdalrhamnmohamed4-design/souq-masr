@@ -2,56 +2,107 @@
  * app/services/results.tsx — بحث/فلترة الخدمات والمحترفين (PART 28/30):
  * نتيجة البحث بتفرّق بوضوح بين "خدمات" و"محترفين" — قسمين منفصلين.
  *
- * توحيد شريط البحث/الفلترة (طلب UX §13): نفس شكل app/results.tsx و
- * app/jobs/results.tsx بالظبط — [رجوع] [بحث] [فلترة + عدّاد]، وكل عناصر
- * الفلترة (قسم/مهنة/ترتيب) بقت جوه sheet سفلي واحد بدل صفوف تشيبس ثابتة
- * فوق الشاشة، بنفس FilterGroup/FilterOpt المستخدمين في الشاشتين التانيين.
+ * Phase 2B — Jobs + Services Mobile Wiring: فلترة/ترتيب/تحميل-المزيد
+ * حقيقية سيرفريًا (search_services مع trade_key/sort الجداد) + خدمات
+ * mock محلية لسه بتتفلتر client-side وتتلحق في آخر القايمة. "محترفون
+ * مطابقون" فضلت مصدرها الوحيد mock (professionalProfile المحلي) — مفيش
+ * endpoint حقيقي للبحث عن محترفين بالاسم/الوصف/المهارات (بناء واحد
+ * جديد هيبقى ميزة سوق جديدة، خارج نطاق الجولة دي) — فجوة موثّقة صراحةً،
+ * مش خطأ.
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ApiStateView } from '@/components/ApiStateView';
 import { Icon } from '@/components/Icon';
 import { Pill } from '@/components/primitives/Pill';
 import { Button } from '@/components/primitives/Button';
 import { getServiceCategories, getServiceCategory, getTradesForCategory } from '@/mock/jobs/trades';
 import { matchesQuery } from '@/lib/search';
+import { useApiResult } from '@/hooks/useApiResult';
+import { searchServices, type RealServiceSummary, type ServicesSort } from '@/services/serviceListingService';
 import { useAllServices, useJobsStore } from '@/store/useJobsStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
-const SORTS = ['الأحدث', 'الأقل سعرًا', 'الأعلى سعرًا'];
+const SORTS: { key: ServicesSort; label: string }[] = [
+  { key: 'newest', label: 'الأحدث' },
+  { key: 'price_asc', label: 'الأقل سعرًا' },
+  { key: 'price_desc', label: 'الأعلى سعرًا' },
+];
+
+type DisplayServiceRow = { id: string; title: string; description: string; price: number | null; priceType: string; areas: string[] };
 
 export default function ServicesResults() {
   const params = useLocalSearchParams<{ q?: string; category?: string }>();
   const router = useRouter();
   const { colors, spacing, radius, brandDark } = useTheme();
   const insets = useSafeAreaInsets();
-  const services = useAllServices();
+  const mockServices = useAllServices();
   const myProfile = useJobsStore((s) => s.professionalProfile);
 
   const [query, setQuery] = useState(params.q ?? '');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [categoryId, setCategoryId] = useState<string | null>(params.category ?? null);
   const [tradeId, setTradeId] = useState<string | null>(null);
-  const [sort, setSort] = useState(SORTS[0]);
+  const [sort, setSort] = useState<ServicesSort>('newest');
   const category = categoryId ? getServiceCategory(categoryId) : undefined;
   const trades = categoryId ? getTradesForCategory(categoryId) : [];
 
-  const filteredServices = useMemo(() => {
-    let r = services.filter((s) => s.status === 'active');
+  const { state: searchState, refetch: refetchSearch } = useApiResult(
+    () => searchServices({ q: query.trim() || undefined, categoryKey: categoryId ?? undefined, tradeKey: tradeId ?? undefined, sort, page: 1, limit: 20 }),
+    [query, categoryId, tradeId, sort],
+  );
+
+  const [additionalItems, setAdditionalItems] = useState<RealServiceSummary[]>([]);
+  const [nextPage, setNextPage] = useState(2);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
+
+  useEffect(() => {
+    setAdditionalItems([]);
+    setNextPage(2);
+    setLoadMoreFailed(false);
+  }, [query, categoryId, tradeId, sort]);
+
+  const baseRealItems = searchState.kind === 'success' ? searchState.data.items : [];
+  const totalReal = searchState.kind === 'success' ? searchState.data.total : 0;
+  const realItems = [...baseRealItems, ...additionalItems];
+  const hasMore = realItems.length < totalReal;
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    setLoadMoreFailed(false);
+    const r = await searchServices({ q: query.trim() || undefined, categoryKey: categoryId ?? undefined, tradeKey: tradeId ?? undefined, sort, page: nextPage, limit: 20 });
+    setLoadingMore(false);
+    if (r.status !== 'success') {
+      setLoadMoreFailed(true);
+      return;
+    }
+    setAdditionalItems((prev) => [...prev, ...r.data.items]);
+    setNextPage((p) => p + 1);
+  };
+
+  const mockFiltered = useMemo(() => {
+    let r = mockServices.filter((s) => s.status === 'active');
     if (categoryId) r = r.filter((s) => s.categoryId === categoryId);
     if (tradeId) r = r.filter((s) => s.tradeId === tradeId);
     if (query.trim()) r = r.filter((s) => matchesQuery(`${s.title} ${s.description}`, query));
-    if (sort === 'الأقل سعرًا') r.sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
-    else if (sort === 'الأعلى سعرًا') r.sort((a, b) => (b.price ?? 0) - (a.price ?? 0));
+    if (sort === 'price_asc') r.sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
+    else if (sort === 'price_desc') r.sort((a, b) => (b.price ?? 0) - (a.price ?? 0));
     return r;
-  }, [services, categoryId, tradeId, query, sort]);
+  }, [mockServices, categoryId, tradeId, query, sort]);
+
+  const filteredServices: DisplayServiceRow[] = [
+    ...realItems.map((s): DisplayServiceRow => ({ id: s.id, title: s.title, description: '', price: s.price, priceType: s.priceType, areas: s.serviceAreas })),
+    ...mockFiltered.map((s): DisplayServiceRow => ({ id: s.id, title: s.title, description: s.description, price: s.price ?? null, priceType: s.priceType, areas: s.serviceAreas })),
+  ];
 
   // محترفين حقيقيين مطابقين — حاليًا مصدرهم الوحيد هو نفس المستخدم (بدون
   // باك إند) لو عنده ملف محترف نشط ومهنته أو خدماته مطابقة للبحث.
   const matchingProfessional = useMemo(() => {
     if (!myProfile) return null;
-    if (categoryId && !filteredServices.some((s) => s.professionalSellerId === 'me')) return null;
+    if (categoryId && !mockFiltered.some((s) => s.professionalSellerId === 'me')) return null;
     if (
       query.trim() &&
       !matchesQuery(myProfile.name, query) &&
@@ -60,7 +111,7 @@ export default function ServicesResults() {
     )
       return null;
     return myProfile;
-  }, [myProfile, query, categoryId, filteredServices]);
+  }, [myProfile, query, categoryId, mockFiltered]);
 
   const activeCount = (categoryId ? 1 : 0) + (tradeId ? 1 : 0);
 
@@ -91,6 +142,12 @@ export default function ServicesResults() {
 
       <Text style={{ fontSize: 11, color: colors.ink3, paddingHorizontal: spacing.s5, paddingBottom: spacing.s3 }}>{filteredServices.length} خدمة</Text>
 
+      {searchState.kind !== 'success' && searchState.kind !== 'loading' && searchState.kind !== 'empty' ? (
+        <View style={{ paddingHorizontal: spacing.s5, marginBottom: spacing.s3 }}>
+          <ApiStateView state={searchState} onRetry={refetchSearch} />
+        </View>
+      ) : null}
+
       <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.s5, paddingBottom: 40 }}>
         {matchingProfessional ? (
           <>
@@ -107,19 +164,31 @@ export default function ServicesResults() {
           </>
         ) : null}
 
-        {filteredServices.length === 0 ? (
+        {searchState.kind === 'loading' && filteredServices.length === 0 ? (
+          <ApiStateView state={searchState} />
+        ) : filteredServices.length === 0 ? (
           <Text style={{ fontSize: 12, color: colors.ink3, paddingVertical: 20, textAlign: 'center' }}>مفيش خدمات مطابقة.</Text>
         ) : (
-          filteredServices.map((s) => (
-            <Pressable key={s.id} onPress={() => router.push(`/services/${s.id}`)} style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s3, marginBottom: spacing.s3 }}>
-              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>{s.title}</Text>
-              <Text numberOfLines={2} style={{ fontSize: 11, color: colors.ink3, marginTop: 3, lineHeight: 17 }}>{s.description}</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                {s.price ? <Pill tone="signal">{`${s.priceType === 'starting_from' ? 'من ' : ''}${s.price.toLocaleString('en-US')} ج.م`}</Pill> : null}
-                {s.serviceAreas.slice(0, 2).map((a) => <Pill key={a}>{a}</Pill>)}
-              </View>
-            </Pressable>
-          ))
+          <>
+            {filteredServices.map((s) => (
+              <Pressable key={s.id} onPress={() => router.push(`/services/${s.id}`)} style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s3, marginBottom: spacing.s3 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>{s.title}</Text>
+                {s.description ? <Text numberOfLines={2} style={{ fontSize: 11, color: colors.ink3, marginTop: 3, lineHeight: 17 }}>{s.description}</Text> : null}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  {s.price ? <Pill tone="signal">{`${s.priceType === 'starting_from' ? 'من ' : ''}${s.price.toLocaleString('en-US')} ج.م`}</Pill> : null}
+                  {s.areas.slice(0, 2).map((a) => <Pill key={a}>{a}</Pill>)}
+                </View>
+              </Pressable>
+            ))}
+            {hasMore ? (
+              <Pressable onPress={loadMore} disabled={loadingMore} style={{ alignItems: 'center', paddingVertical: 14 }}>
+                {loadingMore ? <ActivityIndicator size="small" color={colors.signal} /> : <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.signal }}>تحميل المزيد</Text>}
+              </Pressable>
+            ) : null}
+            {loadMoreFailed ? (
+              <Text style={{ textAlign: 'center', color: colors.danger, fontSize: 11.5, paddingTop: 6, paddingBottom: 10 }}>تعذّر تحميل المزيد، جرّب تاني.</Text>
+            ) : null}
+          </>
         )}
       </ScrollView>
 
@@ -147,12 +216,12 @@ export default function ServicesResults() {
               ) : null}
               <FilterGroup title="الترتيب">
                 {SORTS.map((s) => (
-                  <FilterOpt key={s} label={s} active={sort === s} onPress={() => setSort(s)} />
+                  <FilterOpt key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
                 ))}
               </FilterGroup>
             </ScrollView>
             <View style={{ flexDirection: 'row', gap: spacing.s2, paddingHorizontal: spacing.s5, paddingTop: spacing.s3, borderTopWidth: 1, borderTopColor: colors.line }}>
-              <Button variant="ghost" size="sm" style={{ flex: 0, width: 110 }} onPress={() => { setCategoryId(null); setTradeId(null); setSort(SORTS[0]); }}>
+              <Button variant="ghost" size="sm" style={{ flex: 0, width: 110 }} onPress={() => { setCategoryId(null); setTradeId(null); setSort('newest'); }}>
                 امسح الكل
               </Button>
               <View style={{ flex: 1 }}>

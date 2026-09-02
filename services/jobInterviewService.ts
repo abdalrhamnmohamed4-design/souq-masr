@@ -45,3 +45,11 @@ export async function getMyInterviews(page = 1, limit = 20): Promise<ApiResult<{
   if (r.status !== 'success') return r;
   return { status: 'success', data: { items: r.data.items.map(adapt), total: r.data.total } };
 }
+
+/** صاحب الوظيفة بس — دفعة واحدة لكل مقابلات المتقدّمين على وظيفة، بديل
+ * عن نداء getInterviewForApplication لكل متقدّم على حدة (applicants.tsx). */
+export async function getInterviewsForJob(jobId: string): Promise<ApiResult<{ items: RealInterview[] }>> {
+  const r = await frappeGet<{ items: any[] }>(`${NS}.get_interviews_for_job`, { job_id: jobId });
+  if (r.status !== 'success') return r;
+  return { status: 'success', data: { items: r.data.items.map(adapt) } };
+}

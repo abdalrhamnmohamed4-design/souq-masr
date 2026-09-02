@@ -3887,3 +3887,305 @@ No payment gateway was integrated because none exists in this product's
 actual design and none was invented, per instruction. Ad promotion
 spending remains out of scope pending a real promotion feature. No
 regression to any prior GO slice.
+
+# Phase 2B — Jobs + Services Mobile Wiring
+
+Scope: remove remaining mock dependencies from the Jobs and Services
+mobile screens that were still mock-only after the Jobs/Services
+backend slice (`§ Phase 2B — Jobs`, `§ Phase 2B — Services` above).
+Explicitly out of scope this pass (per instruction): Reviews,
+Notifications, Payments, LiveKit, ProductVariant/SKU, a real CV
+builder, Job Alerts, Company/Professional review systems, any new
+marketplace feature. LiveKit stays NO-GO — untouched this pass.
+
+## 1. Files changed
+
+Backend (`souq-masr-app/souq-masr/souq_masr/api/v1/`):
+- `jobs.py` — `search_jobs` gained `sort` (`newest`/`salary_desc`/
+  `experience_asc`) and `is_urgent` filter params (both optional,
+  default preserves old behavior); new `get_hiring_companies(limit=10)`.
+- `job_applications.py` — `get_my_applications` now enriches each row
+  with `job_title`/`company_id`/`company_name` (one batched query for
+  the whole page, not per-row).
+- `job_interviews.py` — new `get_interviews_for_job(job_id)`, owner-only,
+  batched (all interviews for a job's applicants in one call).
+- `saved_jobs.py` — `get_my_saved_jobs` now returns full job summary
+  objects (reusing `jobs.py`'s `SUMMARY_FIELDS`/`_serialize_summary`)
+  instead of bare job-id strings.
+- `services.py` — `search_services` gained `trade_key` filter and
+  `sort` (`newest`/`price_asc`/`price_desc`) params.
+
+Mobile services (`services/`):
+- `jobService.ts` — `searchJobs` gained `isUrgent`/`sort`; new
+  `getHiringCompanies`; `adaptSummary` exported for reuse.
+- `jobApplicationService.ts` — `RealApplication` gained optional
+  `jobTitle`/`companyId`/`companyName`.
+- `jobInterviewService.ts` — new `getInterviewsForJob`.
+- `savedJobService.ts` — `getMySavedJobs` return type changed from
+  `{ items: string[] }` to `{ items: RealJobSummary[] }`.
+- `serviceListingService.ts` — `searchServices` signature changed from
+  positional args to an options object; gained `tradeKey`/`sort`.
+
+Mobile screens (`app/jobs/`, `app/services/`) — full real/mock split,
+listed per-screen in §2/§6 below: `my-jobs.tsx`, `applicants.tsx`,
+`applications.tsx`, `saved.tsx`, `company/[id].tsx`, `index.tsx`,
+`results.tsx`, and `services/my-services.tsx`, `services/index.tsx`,
+`services/results.tsx`.
+
+## 2. Screens migrated
+
+**Jobs:**
+- `my-jobs.tsx` — real jobs via `getMyJobs` merged with legacy mock
+  jobs (same `DisplayJob`/`isReal` merge pattern as
+  `app/(tabs)/myads.tsx`); pause/activate/delete call
+  `pauseJob`/`activateJob`/`deleteJob` for real rows, mock store
+  actions for mock rows; every mutation surfaces a failure `Alert` on
+  non-success.
+- `applicants.tsx` — real job (`JOB-#####`) branches entirely to
+  `getApplicationsForJob` (server 403 for non-owner) +
+  `getInterviewsForJob` (batched); status chips call
+  `setApplicationStatus`; interview scheduling calls
+  `scheduleInterview` (which server-side auto-advances the
+  application to `interview`, so no duplicate client call). Mock job
+  branch unchanged, including its known "only the current user can be
+  a mock applicant" limitation.
+- `applications.tsx` — real applications from the now-enriched
+  `getMyApplications` merged with mock applications (no more
+  client-side `useAllJobs()`/`useAllCompanies()` join for real rows);
+  withdraw calls `withdrawApplication` for real rows.
+- `saved.tsx` — real saved jobs from the now-object-returning
+  `getMySavedJobs`, merged with mock; unsave calls `unsaveJob`.
+- `company/[id].tsx` — split into `RealCompanyProfile`/
+  `MockCompanyProfile` (same pattern as
+  `app/services/professional/[id].tsx`): real company via `getCompany`
+  + `getJobsByCompany`; review section renders honestly empty with no
+  rate action (Company review systems are out of scope this pass);
+  report action wired to `reportContent`/`hasReportedContent` with
+  `target_doctype: "Souq Masr Company"` (reporting ≠ reviewing, stays
+  in scope).
+- `index.tsx` — every rail (newest/urgent/remote/nearby) is now an
+  independent `searchJobs` call merged with the equivalent mock-filtered
+  set (same "each section independent, one failing doesn't break the
+  rest" pattern as `app/(tabs)/home.tsx`); hiring-companies rail from
+  `getHiringCompanies` merged with mock; saved-badge count is
+  mock-count + real-count (`getMySavedJobs().items.length`).
+  "Featured"/"recommended" rails stay mock-only — no real `is_featured`
+  field on `Souq Masr Job` (matches the Listings "no promotion system"
+  precedent) and no profession field on the real Career Profile.
+- `results.tsx` — server-side search via `searchJobs` (q, category,
+  work type, career level, remote, `sort`, `is_urgent`) with manual
+  "load more" pagination (same accumulate-don't-replace pattern as
+  `app/results.tsx`), merged with mock jobs still filtered client-side.
+
+**Services:**
+- `my-services.tsx` — real services via `getMyServices` merged with
+  mock, same merge/mutation pattern as `my-jobs.tsx`.
+- `index.tsx` — "latest services" rail from `searchServices` merged
+  with mock; "My professional profile" section switched from a raw
+  mock-store check to `useMyProfessionalProfile()` (mock-first-then-real).
+- `results.tsx` — server-side search via `searchServices` (q, category,
+  new `trade_key`, new `sort`) with the same manual load-more pattern,
+  merged with mock. "Matching professional" stays mock-only (§6).
+
+## 3. Services added/changed
+
+New: `getHiringCompanies` (`jobService.ts`), `getInterviewsForJob`
+(`jobInterviewService.ts`). Changed signatures: `searchJobs` (added
+`isUrgent`/`sort`), `getMySavedJobs` (object items, not strings),
+`searchServices` (positional args → options object, added
+`tradeKey`/`sort`). All changes are additive/backward-compatible on
+the backend side (new optional params only); the two mobile signature
+changes (`getMySavedJobs`, `searchServices`) had no other callers in
+the repo at the time of the change (verified by grep before editing).
+
+## 4. Backend endpoints reused (no changes)
+
+`companies.get_company`, `jobs.get_jobs_by_company`, `jobs.get_job`,
+`jobs.get_my_jobs`, `jobs.pause_job`/`activate_job`/`delete_job`,
+`job_applications.get_applications_for_job`/`withdraw_application`/
+`set_application_status`, `job_interviews.schedule_interview`,
+`saved_jobs.save_job`/`unsave_job`, `services.get_my_services`/
+`pause_service`/`activate_service`/`delete_service`,
+`content_reports.report_content`/`has_reported_content`,
+`professional_profiles.*` (via `useMyProfessionalProfile`).
+
+## 5. Backend changes made
+
+Exactly the 6 additive gaps identified while mapping every target
+screen to its backend endpoint (§1) — no other backend files touched,
+no DocType schema changes (pure Python API additions), so `bench
+migrate` was not required; only a web-worker + short-worker restart.
+
+## 6. Mock dependencies removed
+
+- `my-jobs.tsx`, `my-services.tsx`: no longer read `userJobs`/
+  `userServices` as the *only* source — real data merged in.
+- `applicants.tsx`: real-job branch no longer uses
+  `careerProfile.fullName` as a stand-in for every applicant's name —
+  uses each real application's own `full_name`.
+- `applications.tsx`, `saved.tsx`, `index.tsx` (jobs), `results.tsx`
+  (jobs + services): no longer perform a client-side
+  `useAllJobs()`/`useAllCompanies()`/`useAllServices()` join as the
+  *only* path for real rows — real rows carry (or batch-fetch) their
+  own denormalized data.
+- `company/[id].tsx`: no longer unconditionally reads
+  `useCompanyById`/mock report store for a `COMP-#####` id.
+
+## 7. Mocks remaining (kept and why)
+
+- Legacy `userJobs`/`userServices`/`applications`/`savedJobs`/
+  `userCompanies`/`professionalProfile` mock-store entries themselves
+  — still rendered wherever they exist, per the project's standing
+  "no global mock deletion" rule; every screen above merges them
+  alongside real data rather than replacing them.
+- "Featured jobs" / "recommended jobs" rails (`index.tsx`) — no real
+  `is_featured` field, no real profession-match field; disclosed, not
+  invented.
+- Company/Professional **review** sections (`company/[id].tsx`, and
+  the already-established `services/professional/[id].tsx`) — render
+  honestly empty for real entities; out of scope this pass by
+  instruction.
+- `matchingProfessional` (`services/results.tsx`) — computed only from
+  the local mock `professionalProfile`; no real professional-search-
+  by-query endpoint exists, and building one is a new marketplace
+  feature, out of scope this pass.
+- Résumé/CV file access for employers (`applicants.tsx`) —
+  `get_application_resume` exists and works server-side (base64,
+  candidate-or-employer only, never a raw URL); no file-viewer/download
+  UI or library (e.g. `expo-file-system`) was added this pass since
+  none exists yet in the app and adding one is infrastructure beyond
+  "wiring". The applicant card shows a "resume attached" indicator with
+  no action. Documented gap, not a fabricated link.
+- `app/jobs/interviews.tsx` (linked from `applications.tsx`'s header
+  icon) and `app/jobs/alerts.tsx` — untouched. Job Alerts is explicitly
+  out of scope; the interviews list screen was not in the instruction's
+  enumerated screen list.
+- Chat-with-provider for Services — confirmed (again) that
+  `app/services/[id].tsx` has no chat entry point to begin with (only
+  `tel:`/`wa.me` links); nothing to wire, nothing newly deferred.
+- Service Favorites — no dedicated `Souq Masr Service Favorite`
+  DocType exists; the shared local `favorites` mechanism (already
+  established in a prior slice) is reused, not replaced.
+
+## 8. Security tests (live, against the VPS)
+
+Four real test users created (`p2b-employer`, `p2b-employer2`,
+`p2b-candidate`, `p2b-candidate2`). Verified live:
+- Employer A cannot read Employer B's applicants
+  (`get_applications_for_job` → 403 `PermissionError`).
+- Employer A cannot read Employer B's interviews for a job they don't
+  own (`get_interviews_for_job` → 403).
+- Guest cannot call `get_interviews_for_job` at all (whitelisted
+  non-guest → 403/Method Not Allowed).
+- Candidate B cannot withdraw Candidate A's application
+  (`withdraw_application` → 403).
+- `get_applications_for_job`'s response never includes a raw resume
+  URL/field for any application row (only `has_resume: bool`).
+- Invalid job id → `DoesNotExistError` (404-equivalent) for `get_job`
+  and `get_interviews_for_job` (not a silent owner-bypass).
+- Malformed `limit` param on `get_hiring_companies` → handled
+  gracefully (Frappe's own `cint` coercion), not a 500.
+- Empty results return `{"items": []}` cleanly (`get_my_saved_jobs`
+  for a user with nothing saved, `search_services` for a non-matching
+  `trade_key`) — never an error.
+
+## 9. Live HTTP tests
+
+Two Python scripts run against the live VPS
+(`187.7.19.136`, real login via `/api/method/login`, real cookies, no
+mocked HTTP):
+- `live_test_p2b.py` — 47/47 passed. Covers: `search_jobs` `sort`
+  (`salary_desc`/`experience_asc` verified by actual row order) and
+  `is_urgent` filter, backward-compat with no params;
+  `get_hiring_companies` (correct `openJobs` counts, correct company
+  fields); `get_my_applications` enrichment (`job_title`/
+  `company_name` verified against the real job/company just created);
+  `get_interviews_for_job` (contains the just-scheduled interview,
+  denies non-owner and guest); `get_my_saved_jobs` (full objects, not
+  strings; correct newest-first order); `search_services` `trade_key`
+  filter and `sort` (`price_asc`/`price_desc` verified by actual row
+  order); the CV-privacy and edge-case checks in §8. All test fixtures
+  (users' companies/jobs/applications/interviews/saved
+  rows/services/professional profiles) created and deleted live via
+  the real API + `bench console` cleanup, not fabricated.
+- `regression_check.py` — 6/6 passed. Confirms `listings.search_listings`,
+  `taxonomy.get_children`, `favorites.get_my_favorites`,
+  `chat.get_my_conversations` (both authenticated and guest-denied)
+  still behave exactly as before this pass's backend edits — none of
+  those files were touched, and this proves the additive changes to
+  `jobs.py`/`services.py`/etc. didn't regress anything sharing them.
+
+## 10. Mobile wire-format tests
+
+Every live test in §9 calls the exact same whitelisted method names
+with the exact same snake_case parameter names the mobile
+`services/*.ts` files send (verified by reading each service file's
+`frappeGet`/`frappePost` call sites before writing the test payloads —
+e.g. `category_key`/`work_type`/`career_level`/`is_urgent`/`sort` for
+`search_jobs`, `trade_key`/`sort` for `search_services`), and asserts
+on the exact response shape each adapter function (`adaptSummary`,
+`adapt` in each service file) expects to consume.
+
+## 11. Build results
+
+- `npx tsc --noEmit -p tsconfig.json` — **0 errors.**
+- `npx expo export --platform ios` — succeeded, 2038 modules bundled,
+  no build errors.
+
+## 12. Bugs found/fixed during this pass
+
+- `get_hiring_companies` first draft used wrong `Souq Masr Company`
+  field names (`company_name`/`is_verified` instead of the DocType's
+  actual `name1`/`verification`) — caught before deployment by reading
+  `souq_masr_company.json`, fixed before the first live test run.
+- My own test script's first run had two self-inflicted failures (wrong
+  `create_or_update_my_profile` param names, and a wrong
+  `taxonomy.get_categories` method name in the regression check that
+  should have been `get_children`) — both were test-script bugs, not
+  backend/mobile bugs; fixed and both suites went green.
+
+## 13. Performance / N+1 checks
+
+- `get_my_saved_jobs`: was N per-job fetches from the mobile client,
+  now one query for the saved rows + one batched `IN`-filtered query
+  for the jobs themselves.
+- `get_my_applications`: was a per-row client-side join against
+  `useAllJobs()`/`useAllCompanies()`; now one batched query for all
+  jobs referenced on the page + one batched query for all their
+  companies (`_batch_job_info`), not one query per application.
+- `get_interviews_for_job`: was N calls to
+  `get_interview_for_application` (one per applicant row) from
+  `applicants.tsx`; now one query for the whole job.
+- `get_hiring_companies`: one `GROUP BY` SQL query for job counts per
+  company + one batched `IN`-filtered query for company details — not
+  a full job-table fetch with client-side de-duplication.
+- Pagination: `results.tsx` (jobs and services) both use the
+  established "load more accumulates, doesn't replace" pattern with a
+  stable `sort`, and `hasMore` is computed from the server's own
+  `total` — no duplicate rows across pages, no client-side re-sort of
+  already-loaded pages.
+
+## 14. Remaining limitations
+
+See §7 for the full disclosed-mock inventory. In addition:
+- Real job/service cards in `saved.tsx`/`index.tsx`/`results.tsx` show
+  no company name for real rows in a few rails (`RealJobSummary` only
+  carries a company *id*, not its name) — omitted rather than an extra
+  N+1 lookup per row; a minor display simplification, not a
+  correctness issue.
+- `get_hiring_companies`' `limit` param silently coerces a
+  non-numeric value via Frappe's own `cint` (falls back to the
+  default) rather than raising a validation error — matches the
+  existing convention of every other paginated endpoint in this
+  codebase (`_paginate` does the same), not a new inconsistency.
+
+## 15. GO/NO-GO decision
+
+# ✅ GO — for Jobs + Services mobile wiring specifically: all 10 target screens migrated to real backend data (merged with legacy mock, nothing silently dropped), all 6 additive backend gaps live-tested (47/47) including cross-user/guest security and CV-privacy checks, zero TypeScript errors, a clean `expo export`, and a 6/6 regression pass on Listings/Favorites/Chat/Auth confirming no shared code broke
+
+Per the request's own instruction: this does **not** mean the whole
+Souq Masr project is production-ready. **LiveKit voice calling remains
+NO-GO** — untouched this pass, still pending a real two-physical-device
+test the user has to run personally. Push notification transport
+remains not built (§ Phase 2B — Notifications, §8). No other feature
+vertical was started after this one, per instruction.

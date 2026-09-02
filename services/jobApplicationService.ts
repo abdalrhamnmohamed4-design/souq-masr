@@ -23,6 +23,13 @@ export type RealApplication = {
   status: ApplicationStatus;
   appliedAt: string;
   isMine: boolean;
+  /** بس لما getMyApplications هي اللي رجّعته — job/company enrichment
+   * لتفادي client-side join لكل صف (applications.tsx كان بيعمل
+   * useAllJobs()/useAllCompanies() قبل كده). jobTitle=null يعني الوظيفة
+   * اتحذفت فعليًا (delete_job's force=1) — الشاشة لازم تعرض "وظيفة محذوفة". */
+  jobTitle?: string | null;
+  companyId?: string | null;
+  companyName?: string | null;
 };
 
 function adapt(raw: any): RealApplication {
@@ -30,6 +37,7 @@ function adapt(raw: any): RealApplication {
     id: raw.id, job: raw.job, fullName: raw.full_name, phone: raw.phone, email: raw.email,
     hasResume: raw.has_resume, coverLetter: raw.cover_letter, status: raw.status,
     appliedAt: raw.applied_at, isMine: raw.is_mine,
+    ...(raw.job_title !== undefined ? { jobTitle: raw.job_title, companyId: raw.company_id, companyName: raw.company_name } : {}),
   };
 }
 
