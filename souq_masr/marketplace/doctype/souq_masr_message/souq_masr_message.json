@@ -1,0 +1,44 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Message",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "format:MSG-{#####}",
+  "naming_rule": "Expression",
+  "engine": "InnoDB",
+  "creation": "2026-09-02 00:00:00.000000",
+  "modified": "2026-09-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["conversation", "kind", "text", "image", "call", "is_read"],
+  "fields": [
+    { "fieldname": "conversation", "label": "Conversation", "fieldtype": "Link", "options": "Souq Masr Conversation", "reqd": 1, "in_standard_filter": 1 },
+    {
+      "fieldname": "kind",
+      "label": "Kind",
+      "fieldtype": "Select",
+      "options": "Text\nSystem\nCallEvent",
+      "default": "Text",
+      "reqd": 1,
+      "description": "Text = a real message from a participant (sender = owner, Frappe's standard field). System = app-generated (e.g. sold confirmation). CallEvent = a call summary line (started/missed/ended-with-duration) — see call field."
+    },
+    { "fieldname": "text", "label": "Text", "fieldtype": "Text" },
+    { "fieldname": "image", "label": "Image", "fieldtype": "Attach Image", "description": "file_url from a prior /api/method/upload_file call, ownership-checked on attach exactly like Souq Masr Listing Image." },
+    { "fieldname": "call", "label": "Call", "fieldtype": "Link", "options": "Souq Masr Call", "description": "Set only when kind = CallEvent — links back to the full call record (souq_masr.api.v1.calls)." },
+    { "fieldname": "is_read", "label": "Read", "fieldtype": "Check", "default": "0" }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 }
+  ],
+  "sort_field": "creation",
+  "sort_order": "ASC"
+}
