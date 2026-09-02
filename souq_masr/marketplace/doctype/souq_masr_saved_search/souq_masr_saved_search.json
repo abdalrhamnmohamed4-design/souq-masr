@@ -1,0 +1,72 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Saved Search",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-08-29 00:00:00.000000",
+  "modified": "2026-08-29 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": [
+    "label",
+    "query",
+    "category",
+    "condition",
+    "field_filters",
+    "location",
+    "min_price",
+    "max_price",
+    "sort"
+  ],
+  "fields": [
+    { "fieldname": "label", "label": "Label", "fieldtype": "Data", "reqd": 1, "in_list_view": 1 },
+    { "fieldname": "query", "label": "Search Text", "fieldtype": "Data" },
+    { "fieldname": "category", "label": "Category", "fieldtype": "Link", "options": "Souq Masr Listing Category" },
+    {
+      "fieldname": "condition",
+      "label": "Condition",
+      "fieldtype": "Select",
+      "options": "\nnew\nbrand_new\nlike_new\nexcellent\nvery_good\ngood\nfair\nused\nfor_parts\nrefurbished\nopen_box"
+    },
+    {
+      "fieldname": "field_filters",
+      "label": "Field Filters (JSON)",
+      "fieldtype": "Small Text",
+      "description": "JSON-encoded {attr_key: value} — mirrors the mobile app's results.tsx fieldFilters state exactly, stored as-is rather than normalized into rows since it's opaque criteria, not queryable data on its own."
+    },
+    {
+      "fieldname": "location",
+      "label": "Location",
+      "fieldtype": "Link",
+      "options": "Souq Masr Location",
+      "description": "Schema-ready for when results.tsx gains a location filter — not populated by the mobile app yet (no such filter exists in the current UI)."
+    },
+    { "fieldname": "min_price", "label": "Min Price", "fieldtype": "Currency", "description": "Schema-ready — no price-range filter exists in the current UI yet." },
+    { "fieldname": "max_price", "label": "Max Price", "fieldtype": "Currency", "description": "Schema-ready — no price-range filter exists in the current UI yet." },
+    {
+      "fieldname": "sort",
+      "label": "Sort",
+      "fieldtype": "Select",
+      "options": "\nnewest\ncheapest\npriciest\nmostViewed\nnearest\nfavoritesFirst",
+      "description": "Schema-ready — the current UI does not persist sort as part of a saved search yet."
+    }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "write": 1, "delete": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

@@ -1,0 +1,50 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Listing Report",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-08-29 00:00:00.000000",
+  "modified": "2026-08-29 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 1,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["listing", "reason", "description", "status"],
+  "fields": [
+    { "fieldname": "listing", "label": "Listing", "fieldtype": "Link", "options": "Souq Masr Listing", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1 },
+    {
+      "fieldname": "reason",
+      "label": "Reason",
+      "fieldtype": "Select",
+      "options": "fake\nscam\nwrong_category\nduplicate\nprohibited\nspam\nabusive_seller\nincorrect_info",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    { "fieldname": "description", "label": "Description", "fieldtype": "Small Text", "description": "Optional free-text detail — not collected by the mobile UI yet (it only offers the reason picker), schema-ready for when it does." },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Open\nReviewed\nDismissed",
+      "default": "Open",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Minimal moderation status so the record is safely storable and triageable later — no admin moderation UI is built this slice (explicitly out of scope)."
+    }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}

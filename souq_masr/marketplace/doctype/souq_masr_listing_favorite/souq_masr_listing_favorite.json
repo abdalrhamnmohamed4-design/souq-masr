@@ -1,0 +1,41 @@
+{
+  "doctype": "DocType",
+  "name": "Souq Masr Listing Favorite",
+  "module": "Marketplace",
+  "custom": 0,
+  "istable": 0,
+  "autoname": "hash",
+  "naming_rule": "Random",
+  "engine": "InnoDB",
+  "creation": "2026-08-29 00:00:00.000000",
+  "modified": "2026-08-29 00:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "idx": 0,
+  "docstatus": 0,
+  "track_changes": 0,
+  "allow_rename": 0,
+  "actions": [],
+  "links": [],
+  "states": [],
+  "field_order": ["listing"],
+  "fields": [
+    {
+      "fieldname": "listing",
+      "label": "Listing",
+      "fieldtype": "Link",
+      "options": "Souq Masr Listing",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "One row per (owner, listing) pair — owner is Frappe's standard field, the favoriting user. Uniqueness is enforced in souq_masr.api.v1.favorites.add_favorite (check-then-idempotent-return) plus a validate() safety check here, not a DB composite key — see souq_masr_listing_favorite.py."
+    }
+  ],
+  "permissions": [
+    { "role": "Souq Masr Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1 },
+    { "role": "All", "create": 1 },
+    { "role": "All", "if_owner": 1, "read": 1, "delete": 1 }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
