@@ -3267,3 +3267,188 @@ real bugs this slice's own testing surfaced (the `None`-return response
 shape, the `str`-vs-`bytes` resume encoding) and fixed before declaring
 GO. No Services/Notifications/Payments code touched. No regression to
 any prior GO slice.
+
+---
+
+# Phase 2B — Services
+
+**Scope, exactly:** real Professional Profiles and Service listings —
+create/edit/pause/activate/delete, public discovery/search, ownership.
+**Explicitly deferred, disclosed:** real Favorites for services (the
+existing shared local mechanism continues, unchanged), Professional/
+Service reviews (as already flagged in both the Reviews and Jobs
+sections), and real chat integration for contacting a provider (§1
+explains why).
+
+## 1. Audit and scope decisions
+
+Read all 7 `app/services/*` screens (~1,100 lines). Services is a much
+smaller domain than Jobs — no applications, no CV, no interviews, just a
+provider profile plus service listings, structurally closer to Listings
+itself.
+
+**Chat integration deliberately NOT connected this slice.**
+`app/services/[id].tsx` never had a "message provider" button to begin
+with (only `tel:`/`wa.me` links) — so there's nothing regressed. But
+extending real chat *to* Services was considered and explicitly
+rejected for this pass: `Souq Masr Conversation.listing` is a `Link` to
+`Souq Masr Listing` specifically, not a generic reference. Broadening it
+to a `Dynamic Link` across Listings and Services would be a schema
+change to an already-shipped, live-tested DocType from Slice 4 —
+disproportionate risk for a button that doesn't currently exist in the
+mock UI either. Native dialer / WhatsApp deep links remain the only
+contact method, matching the existing mock behavior exactly.
+
+**Favorites intentionally NOT migrated.** Services already share
+`store/useAppStore.ts`'s generic local `favorites` Record (disclosed
+back in Slice 3), keyed by an arbitrary string id. A real `SRV-#####` id
+does not match `isRealListingId`'s pattern, so it safely falls through
+to the local-only branch with zero risk of cross-wiring into the real
+Listing-favorites API — verified by reading `toggleFavorite`'s actual
+branch condition before relying on this. Building a normalized `Souq
+Masr Service Favorite` table is a small, well-understood follow-up (the
+exact `Souq Masr Listing Favorite`/`Souq Masr Saved Job` shape), not
+built here to keep this slice bounded.
+
+**Reviews deferred again**, honestly correcting an earlier note: the
+Reviews section originally said professional/company reviews would ship
+"as part of the Jobs and Services slices themselves." Given the
+realistic scope of everything else in both slices, they were deferred in
+Jobs and are deferred again here. `content_reports.py`'s shared system
+already has `Souq Masr Service`/`Souq Masr Professional Profile` in its
+target enum specifically for this — reporting works today (§4), rating
+does not yet.
+
+## 2. Backend DocTypes
+
+| DocType | Autoname | Shape | Permissions |
+|---|---|---|---|
+| `Souq Masr Professional Profile` | `hash` | name/trade_key/photo/description/years_experience/skills_json/service_areas_json/price_starting_from/availability/working_hours/phone/whatsapp/verification | Admin full; `All`: create=1; `All`+if_owner: read/write/delete=1 — no blanket read, public reads through `get_professional_profile`/`get_professional_profile_by_owner` only |
+| `Souq Masr Service` | `format:SRV-{#####}` | category_key/trade_key/title/description/price/price_type/service_areas_json/duration/image_urls_json/availability/status/offer_price/offer_ends_at | Admin full; `All`: create=1; `All`+if_owner: read/write/delete=1; `Guest`: read=1 (public, same shape as `Souq Masr Listing`/`Souq Masr Job`) |
+
+One profile per owner (upsert), same pattern as `Souq Masr Company`/
+`Souq Masr Career Profile`/`Souq Masr Review`. **No `professional` Link
+field on `Souq Masr Service`** — unlike `Souq Masr Job` (which needs an
+explicit `company` Link because a company could in principle have
+co-owners), a Professional Profile is inherently 1:1 with its owner, so
+`owner` alone resolves "whose service is this" without an extra field.
+
+**Images as a JSON array, not a child DocType** — a deliberate, disclosed
+deviation from `Souq Masr Listing`'s own choice: Listing Image is a real
+child table because each row has more than a bare URL conceptually
+(ordering via `idx`); a flat ordered list of public image URLs gains
+nothing from a separate table (array order already *is* display order).
+Applied consistently with the same `*_json` exception already used for
+`Souq Masr Job`'s responsibilities/requirements/skills/benefits fields.
+
+`Souq Masr Service.validate()` rejects an `offer_price >= price` —
+caught live in testing (§3).
+
+## 3. API endpoints
+
+- **`professional_profiles.py`** — `create_or_update_my_profile`
+  (upsert, full-replace semantics matching `companies.py`'s own
+  pattern — the mobile screen always submits the complete form),
+  `get_my_profile`, `get_professional_profile`,
+  `get_professional_profile_by_owner` (the mobile entry point, since
+  `app/services/professional/[id].tsx` navigates by Frappe User id, not
+  by the profile's own internal docname).
+- **`services.py`** — `create_service` (requires an existing
+  professional profile, live-tested), `update_service`,
+  `pause_service`/`activate_service` (status-transition-gated),
+  `delete_service` (force=1), `get_service` (`PUBLIC_STATUSES` gating),
+  `get_my_services`, `search_services` (q/category_key/price_type),
+  `get_services_by_professional`.
+
+Phone on a Professional Profile is **not** privacy-gated the way a
+Listing's/Career Profile's is — a professional profile is a public "hire
+me" business card by design (same as `Souq Masr Company`), matching the
+pre-existing mock UI which already showed `provider.phone`
+unconditionally to any viewer.
+
+## 4. Live HTTP test results (`test_services.py`, 15 groups)
+
+Professional/Customer/Stranger, real signin tokens, all passed:
+
+```
+1. Guest cannot post a service -> 403
+2. Cannot create a service without a professional profile first -> rejected
+3. Create professional profile (upsert) -> same id on re-save
+4. Public (Guest) can view the profile; get_professional_profile_by_owner matches
+5. Service creation now works once a profile exists
+6. Guest can view the active service
+7. Non-owner cannot edit/pause/delete -> 403 on all three
+8. Owner pauses -> not publicly visible -> reactivates (same PUBLIC_STATUSES gating as Listings/Jobs)
+9. offer_price >= price is rejected; a valid lower offer_price is accepted
+10. Search services by q + category_key
+11. Services by professional (public)
+12. get_my_services correctly scoped — a different user sees none of PRO's services
+13. get_my_profile privacy — a stranger's fetch returns their own (none), never PRO's
+14. Invalid ids -> clean 404s, no traceback/filesystem-path leakage
+15. Shared content-report system (built for Jobs) also correctly covers Souq Masr Service
+
+SERVICES TESTS PASSED
+```
+
+## 5. Security/ownership test results
+
+Guest rejected on every mutation (§4.1); non-owner rejected on
+edit/pause/delete against a real second user (§4.7); a service cannot be
+created without first proving a professional profile exists (§4.2);
+`get_my_services`/`get_my_profile` verified scoped strictly per-user
+against a real third user, not just reasoned about (§4.12-13); invalid
+input (`offer_price >= price`) produces a clean validation error, never a
+traceback (§4.9, §4.14).
+
+## 6. Mobile changes
+
+- `services/professionalProfileService.ts`, `services/serviceListingService.ts`
+  (new) — same adapter/`ApiResult` pattern as every prior slice. (Note:
+  the file is named `serviceListingService.ts`, not `serviceService.ts`,
+  to avoid confusion with the `services/` directory itself as a Product
+  concept.)
+- `hooks/useMyProfessionalProfile.ts` (new) — same "mock first, else
+  real" resolution as `hooks/useMyCompany.ts`.
+- `app/services/profile.tsx`, `post.tsx`, `[id].tsx`,
+  `professional/[id].tsx` — migrated with the same real/mock split
+  pattern as every prior slice. A pre-existing local professional
+  profile keeps editing locally, byte-for-byte; a new profile (or none
+  at all) now saves to the real backend, including a real photo upload.
+  The real professional-profile page shows real services but an honestly
+  **empty** reviews section with the rating action hidden — no mock
+  review data is attached to a real profile it doesn't actually belong
+  to.
+
+**Verification:** `tsc --noEmit` clean, `expo export --platform ios`
+clean.
+
+## 7. What's still mock / explicitly out of scope this slice
+
+- `app/services/my-services.tsx`, `app/services/index.tsx`,
+  `app/services/results.tsx` — **not yet migrated**, same disclosed
+  pattern as the equivalent Jobs screens. Backend
+  (`get_my_services`/`search_services`) is built and live-tested.
+- Real Favorites for services (§1) — deferred, small well-understood
+  follow-up.
+- Professional/Service reviews (§1) — deferred; reporting works today,
+  rating does not.
+- Real chat integration for contacting a provider (§1) — deferred;
+  native dialer/WhatsApp links remain the only contact method, matching
+  the pre-existing mock UI exactly (nothing regressed).
+
+## 8. Blockers
+
+None for the scope actually claimed.
+
+## 9. Decision
+
+# ✅ GO — for the Services backend (Professional Profiles/Service listings) and the migrated mobile core loop (profile setup → post/edit a service → view it → view a provider's public profile)
+# ⏳ Mobile discovery/management screens (my-services, home, search) remain mock — backend ready, wiring pending, explicitly disclosed in §7
+
+Every mutation tested against Guest, authenticated owner, and
+authenticated non-owner, plus the "no profile yet" precondition check —
+all live HTTP, all passed. No Notifications/Payments code touched. No
+regression to any prior GO slice (Reviews/Jobs/Chat/Calls/Listings all
+re-verified unaffected by inspection — no shared file was modified
+except the already-audited `toggleFavorite` branch condition, which was
+read, not changed).

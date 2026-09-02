@@ -3,10 +3,17 @@
  * 'me' بيرجع بروفايل المستخدم الحالي (المصدر الحقيقي الوحيد المتاح من
  * غير باك إند متعدد المستخدمين). مراجعة QA لقيت: مفيش مشاركة/مفضلة/بلاغ،
  * والشريط السفلي مكنش بيحسب safe-area، وكان ممكن تقيّم نفسك — كلهم اتصلحوا.
+ *
+ * Services vertical (Phase 2B): id تاني غير 'me' (Frappe User docname
+ * حقيقي) معناه بروفايل محترف حقيقي — souq_masr.api.v1.
+ * professional_profiles.get_professional_profile_by_owner. تقييمات
+ * المحترفين لسه خارج النطاق (مؤجّلة، موثّق في التقرير) — قسم التقييمات
+ * بيبان صادق فاضي للبروفايلات الحقيقية بدل ما يستخدم نظام mock منفصل
+ * عن صاحبه الحقيقي.
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Linking } from 'react-native';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, Share, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/Icon';
@@ -17,6 +24,9 @@ import { getTrade } from '@/mock/jobs/trades';
 import { useRequireAuth } from '@/lib/auth';
 import { useRequireOnline } from '@/lib/connectivityGuard';
 import type { JobsReportReason } from '@/mock/jobs/types';
+import { hasReportedContent, reportContent } from '@/services/contentReportService';
+import { getProfessionalProfileByOwner, isMockProfessionalId, type RealProfessionalProfile } from '@/services/professionalProfileService';
+import { getServicesByProfessional, type RealServiceSummary } from '@/services/serviceListingService';
 import { useAllServices, useJobsReviewsFor, useJobsStore } from '@/store/useJobsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -30,6 +40,170 @@ const REPORT_REASONS: { key: JobsReportReason; label: string }[] = [
 ];
 
 export default function ProfessionalProfilePage() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const storeProfile = useJobsStore((s) => s.professionalProfile);
+  // "me" مع بروفايل محلي (mock قديم) موجود فعلًا → مسار mock زي ما هو
+  // بالظبط. أي حاجة تانية (id حقيقي، أو "me" من غير بروفايل محلي) →
+  // مسار حقيقي.
+  const useMock = isMockProfessionalId(id) && !!storeProfile;
+  return useMock ? <MockProfessionalProfilePage /> : <RealProfessionalProfilePage id={id === 'me' ? undefined : id} />;
+}
+
+// ============================================================ REAL
+function RealProfessionalProfilePage({ id }: { id: string | undefined }) {
+  const router = useRouter();
+  const { colors, spacing, radius } = useTheme();
+  const insets = useSafeAreaInsets();
+  const isFav = useAppStore((s) => s.isFavorite);
+  const toggleFav = useAppStore((s) => s.toggleFavorite);
+  const requireAuth = useRequireAuth();
+
+  const [profile, setProfile] = useState<RealProfessionalProfile | null>(null);
+  const [services, setServices] = useState<RealServiceSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [reported, setReported] = useState(false);
+
+  useEffect(() => {
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    getProfessionalProfileByOwner(id).then(async (r) => {
+      if (cancelled || r.status !== 'success') {
+        setLoading(false);
+        return;
+      }
+      setProfile(r.data);
+      const svc = await getServicesByProfessional(id);
+      if (!cancelled && svc.status === 'success') setServices(svc.data.items);
+      setLoading(false);
+      hasReportedContent('Souq Masr Professional Profile', r.data.id).then((rr) => { if (!cancelled && rr.status === 'success') setReported(rr.data.has_reported); });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (loading) return <View style={{ flex: 1, backgroundColor: colors.paper }} />;
+  if (!profile) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.paper }}>
+        <Text style={{ color: colors.ink3 }}>الملف مش موجود</Text>
+      </View>
+    );
+  }
+
+  const trade = profile.tradeKey ? getTrade(profile.tradeKey) : undefined;
+  const isMe = profile.isOwner;
+
+  const shareProfile = () => Share.share({ message: `${profile.name} — محترف ${trade?.name ?? ''}\nعلى سوق مصر` });
+  const toggleFavGuarded = () => requireAuth(() => toggleFav(`pro-${profile.id}`), { type: 'favorite_service', serviceId: `pro-${profile.id}` });
+  const reportProfile = () =>
+    requireAuth(() => {
+      if (reported) {
+        Alert.alert('اتبلّغ عن الملف ده', 'شكرًا، البلاغ بتاعك اتسجّل وهيتراجع.');
+        return;
+      }
+      Alert.alert('بلّغ عن المحترف', 'اختار السبب', [
+        ...REPORT_REASONS.map((r) => ({
+          text: r.label,
+          onPress: async () => {
+            await reportContent('Souq Masr Professional Profile', profile.id, r.key);
+            setReported(true);
+            Alert.alert('شكرًا', 'اتسجّل البلاغ وهنراجعه.');
+          },
+        })),
+        { text: 'إلغاء', style: 'cancel' as const },
+      ]);
+    });
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.paper }}>
+      <ScreenHeader
+        title="ملف المحترف"
+        onBack={() => router.back()}
+        right={
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Pressable onPress={shareProfile}>
+              <Icon name="share" color={colors.ink} size={18} />
+            </Pressable>
+            {!isMe ? (
+              <Pressable onPress={toggleFavGuarded}>
+                <Icon name="heart" color={isFav(`pro-${profile.id}`) ? colors.signal : colors.ink} size={18} />
+              </Pressable>
+            ) : null}
+          </View>
+        }
+      />
+      <ScrollView contentContainerStyle={{ padding: spacing.s5, paddingBottom: 60 + insets.bottom }}>
+        <View style={{ alignItems: 'center' }}>
+          <View style={{ width: 76, height: 76, borderRadius: 22, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+            {profile.photo ? <Image source={{ uri: profile.photo }} style={{ width: 76, height: 76 }} /> : <Icon name="user" size={28} color={colors.signal2} />}
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.s3 }}>
+            <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 16, color: colors.ink }}>{profile.name}</Text>
+            {profile.verification === 'verified' ? <Icon name="shield" size={15} color={colors.verify} /> : null}
+          </View>
+          {trade ? <Text style={{ fontSize: 12, color: colors.ink3, marginTop: 2 }}>{trade.name}{profile.yearsExperience ? ` · ${profile.yearsExperience} سنين خبرة` : ''}</Text> : null}
+        </View>
+
+        <Text style={{ fontSize: 12.5, color: colors.ink2, lineHeight: 21, marginTop: spacing.s4, textAlign: 'center' }}>{profile.description}</Text>
+
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: spacing.s4 }}>
+          {profile.serviceAreas.map((a) => <Pill key={a} icon={<Icon name="pin" size={11} color={colors.ink2} />}>{a}</Pill>)}
+        </View>
+
+        {profile.skills.length > 0 ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: spacing.s3 }}>
+            {profile.skills.map((s) => <Pill key={s} tone="signal">{s}</Pill>)}
+          </View>
+        ) : null}
+
+        {profile.priceStartingFrom ? (
+          <View style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s4, marginTop: spacing.s5, alignItems: 'center' }}>
+            <Text style={{ fontSize: 11, color: colors.ink3 }}>الأسعار تبدأ من</Text>
+            <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 20, color: colors.ink, marginTop: 3 }}>{profile.priceStartingFrom.toLocaleString('en-US')} ج.م</Text>
+          </View>
+        ) : null}
+
+        {services.length > 0 ? (
+          <>
+            <Text style={{ fontFamily: 'Cairo_700Bold', fontSize: 14, color: colors.ink, marginTop: spacing.s6, marginBottom: spacing.s3 }}>الخدمات ({services.length})</Text>
+            {services.map((s) => (
+              <Pressable key={s.id} onPress={() => router.push(`/services/${s.id}`)} style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r2, padding: spacing.s3, marginBottom: spacing.s2 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.ink }}>{s.title}</Text>
+              </Pressable>
+            ))}
+          </>
+        ) : null}
+
+        {!isMe ? (
+          <Pressable onPress={reportProfile} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: spacing.s4, marginTop: spacing.s6 }}>
+            <Icon name="flag" size={13} color={reported ? colors.danger : colors.ink3} />
+            <Text style={{ fontSize: 11, color: reported ? colors.danger : colors.ink3 }}>{reported ? 'اتبلّغ عن الملف ده' : 'بلّغ عن المحترف ده'}</Text>
+          </Pressable>
+        ) : null}
+      </ScrollView>
+
+      {profile.phone ? (
+        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: colors.card, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: spacing.s4, paddingHorizontal: spacing.s4, paddingBottom: spacing.s4 + insets.bottom, flexDirection: 'row', gap: spacing.s2 }}>
+          <View style={{ flex: 1 }}>
+            <Button icon={<Icon name="phone" color="#fff" size={16} />} onPress={() => Linking.openURL(`tel:${profile.phone}`)}>اتصال</Button>
+          </View>
+          {profile.whatsapp ? (
+            <Pressable onPress={() => Linking.openURL(`https://wa.me/${profile.whatsapp}`)} style={{ width: 52, borderRadius: radius.r2, backgroundColor: colors.verify, alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="wa" color="#fff" />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// ============================================================ MOCK (كان موجود قبل كده، من غير تغيير)
+function MockProfessionalProfilePage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { colors, spacing, radius } = useTheme();

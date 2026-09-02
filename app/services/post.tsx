@@ -1,12 +1,16 @@
 /**
  * app/services/post.tsx — إضافة خدمة جديدة (PART 27). محتاج ملف محترف
  * الأول (زي ما نشر وظيفة محتاج ملف شركة).
+ *
+ * Services vertical (Phase 2B): editId بتاع SRV-##### معناه خدمة حقيقية.
+ * إنشاء جديد بيتسجّل حقيقي لو الملف المهني حقيقي (أو لو مفيش ملف محلي
+ * قديم خالص)، غير كده بيفضل محلي — نفس نمط app/jobs/post.tsx بالظبط.
  */
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
-import { Image, Pressable, ScrollView, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/Icon';
 import { ScreenHeader } from '@/components/ScreenHeader';
@@ -18,6 +22,9 @@ import { FormField } from '@/components/primitives/FormField';
 import { getServiceCategories, getTradesForCategory } from '@/mock/jobs/trades';
 import { toPositiveInt } from '@/lib/validation';
 import type { PriceType } from '@/mock/jobs/types';
+import { frappeUploadFile } from '@/lib/apiClient';
+import { useMyProfessionalProfile } from '@/hooks/useMyProfessionalProfile';
+import { createService, getServiceListing, isRealServiceId, updateService, type RealServiceListing } from '@/services/serviceListingService';
 import { useJobsStore } from '@/store/useJobsStore';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -28,11 +35,25 @@ export default function PostService() {
   const { editId } = useLocalSearchParams<{ editId?: string }>();
   const { colors, spacing, radius } = useTheme();
   const insets = useSafeAreaInsets();
-  const myProfile = useJobsStore((s) => s.professionalProfile);
   const userServices = useJobsStore((s) => s.userServices);
   const addService = useJobsStore((s) => s.addService);
-  const updateService = useJobsStore((s) => s.updateService);
-  const editingService = editId ? userServices.find((sv) => sv.id === editId) : undefined;
+  const updateServiceMock = useJobsStore((s) => s.updateService);
+  const myProfile = useMyProfessionalProfile();
+
+  const editIsReal = isRealServiceId(editId);
+  const editingServiceMock = editId && !editIsReal ? userServices.find((sv) => sv.id === editId) : undefined;
+  const [realEditingService, setRealEditingService] = useState<RealServiceListing | null>(null);
+  const [loadingRealService, setLoadingRealService] = useState(editIsReal);
+
+  useEffect(() => {
+    if (!editIsReal || !editId) return;
+    getServiceListing(editId).then((r) => {
+      if (r.status === 'success') setRealEditingService(r.data);
+      setLoadingRealService(false);
+    });
+  }, [editIsReal, editId]);
+
+  const editingService = editingServiceMock;
 
   const [categoryId, setCategoryId] = useState<string | null>(editingService?.categoryId ?? null);
   const [tradeId, setTradeId] = useState<string | undefined>(editingService?.tradeId);
@@ -44,8 +65,27 @@ export default function PostService() {
   const [offerPrice, setOfferPrice] = useState(editingService?.offerPrice !== undefined ? String(editingService.offerPrice) : '');
   const [offerEndsAt, setOfferEndsAt] = useState<string | null>(editingService?.offerEndsAt ?? null);
   const [showOfferDatePicker, setShowOfferDatePicker] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
+  useEffect(() => {
+    if (!realEditingService) return;
+    setCategoryId(realEditingService.categoryKey);
+    setTradeId(realEditingService.tradeKey ?? undefined);
+    setTitle(realEditingService.title);
+    setDescription(realEditingService.description);
+    setPrice(realEditingService.price != null ? String(realEditingService.price) : '');
+    setPriceType(realEditingService.priceType);
+    setImageUris(realEditingService.imageUrls);
+    setOfferPrice(realEditingService.offerPrice != null ? String(realEditingService.offerPrice) : '');
+    setOfferEndsAt(realEditingService.offerEndsAt);
+  }, [realEditingService]);
+
   const authBlock = useAuthGuard({ title: 'سجّل دخولك عشان تضيف خدمة', description: 'إضافة خدمة محتاجة ملف محترف مرتبط بحسابك — سجّل دخولك الأول.' });
   if (authBlock) return authBlock;
+
+  if (myProfile.loading || loadingRealService) {
+    return <View style={{ flex: 1, backgroundColor: colors.paper }} />;
+  }
 
   const trades = categoryId ? getTradesForCategory(categoryId) : [];
 
@@ -58,17 +98,46 @@ export default function PostService() {
 
   const canSave = !!categoryId && title.trim().length > 3 && description.trim().length > 5;
 
-  const publish = () => {
+  const publish = async () => {
     if (!categoryId) return;
+
+    if ((!myProfile.mock && myProfile.real) || editIsReal) {
+      setPublishing(true);
+      // ارفع أي صور محلية جديدة (uri مش https/http بالفعل) قبل الحفظ.
+      const uploadedUris: string[] = [];
+      for (const uri of imageUris) {
+        if (uri.startsWith('http')) {
+          uploadedUris.push(uri);
+          continue;
+        }
+        const uploadResult = await frappeUploadFile({ uri, name: uri.split('/').pop() || `svc-${Date.now()}.jpg`, mimeType: 'image/jpeg' });
+        if (uploadResult.status === 'success') uploadedUris.push(uploadResult.data.fileUrl);
+      }
+      const payload = {
+        categoryKey: categoryId, title: title.trim(), tradeKey: tradeId, description: description.trim(),
+        price: toPositiveInt(price), priceType,
+        serviceAreas: myProfile.real?.serviceAreas ?? [], imageUrls: uploadedUris,
+        offerPrice: toPositiveInt(offerPrice), offerEndsAt: offerPrice ? offerEndsAt ?? undefined : undefined,
+      };
+      const r = editIsReal && editId ? await updateService(editId, payload) : await createService(payload);
+      setPublishing(false);
+      if (r.status !== 'success') {
+        Alert.alert('تعذّر النشر', 'حصلت مشكلة، جرّب تاني.');
+        return;
+      }
+      router.replace(`/services/${r.data.id}`);
+      return;
+    }
+
     const patch = {
       categoryId, tradeId, title: title.trim(), description: description.trim(),
       price: toPositiveInt(price), priceType,
-      serviceAreas: myProfile?.serviceAreas ?? [], imageUris,
+      serviceAreas: (myProfile.mock as { serviceAreas?: string[] } | null)?.serviceAreas ?? [], imageUris,
       offerPrice: toPositiveInt(offerPrice),
       offerEndsAt: offerPrice ? offerEndsAt ?? undefined : undefined,
     };
     if (editingService) {
-      updateService(editingService.id, patch);
+      updateServiceMock(editingService.id, patch);
       router.replace(`/services/${editingService.id}`);
       return;
     }
@@ -76,7 +145,7 @@ export default function PostService() {
     router.replace(`/services/${id}`);
   };
 
-  if (!myProfile) {
+  if (!myProfile.any) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.paper }}>
         <ScreenHeader title="إضافة خدمة" onBack={() => router.back()} />
@@ -93,7 +162,7 @@ export default function PostService() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.paper }}>
-      <ScreenHeader title={editingService ? 'تعديل الخدمة' : 'إضافة خدمة'} onBack={() => router.back()} />
+      <ScreenHeader title={editingService || realEditingService ? 'تعديل الخدمة' : 'إضافة خدمة'} onBack={() => router.back()} />
       <ScrollView contentContainerStyle={{ padding: spacing.s5, paddingBottom: 130 + insets.bottom }}>
         <Text style={{ fontSize: 11, fontWeight: '700', color: colors.ink, marginBottom: 8 }}>القسم</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.s4 }}>
@@ -163,7 +232,7 @@ export default function PostService() {
       </ScrollView>
 
       <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: colors.card, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: spacing.s4, paddingHorizontal: spacing.s4, paddingBottom: spacing.s4 + insets.bottom }}>
-        <Button disabled={!canSave} onPress={publish}>{editingService ? 'احفظ التعديلات' : 'نشر الخدمة'}</Button>
+        <Button disabled={!canSave || publishing} onPress={publish}>{editingService || realEditingService ? 'احفظ التعديلات' : 'نشر الخدمة'}</Button>
       </View>
     </View>
   );

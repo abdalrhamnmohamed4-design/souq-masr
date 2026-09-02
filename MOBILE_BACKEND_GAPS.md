@@ -22,7 +22,9 @@ souq_masr/api/v1/job_applications.py — 7 endpoints (integrated, Phase 2B Jobs 
 souq_masr/api/v1/job_interviews.py — 3 endpoints (integrated, Phase 2B Jobs)
 souq_masr/api/v1/saved_jobs.py   — 4 endpoints (integrated, Phase 2B Jobs)
 souq_masr/api/v1/career_profile.py — 3 endpoints (integrated, Phase 2B Jobs — scalar fields + resume only, see below)
-souq_masr/api/v1/content_reports.py — 2 endpoints (integrated, Phase 2B Jobs — shared with Services once built)
+souq_masr/api/v1/content_reports.py — 2 endpoints (integrated, Phase 2B Jobs — now also covers Services)
+souq_masr/api/v1/professional_profiles.py — 4 endpoints (integrated, Phase 2B Services)
+souq_masr/api/v1/services.py         — 8 endpoints (integrated, Phase 2B Services — core loop wired; my-services/results/discovery mobile screens not yet migrated)
 ```
 
 Nothing else exists server-side. Per the explicit instruction for this
@@ -200,7 +202,25 @@ core loop only.
 | CV privacy (résumé access restricted to candidate/employer) | ✅ **Built, live-tested** — 8-group test suite including a real unauthorized-stranger-gets-403 case, see integration report §5 | Auth | Done |
 | Career Profile | ✅ **Built, live-tested, wired at the API level** — scalar fields + one résumé file only (deep CV builder deferred, see integration report §1). Not yet wired into `app/jobs/profile.tsx` (that screen stays mock, by design, until/unless the deep builder itself is migrated) | Auth (owner-only, always) | Scoped Done |
 | Job Alerts | ⏳ Not built — deferred, separable follow-up | Auth | Low |
-| Company/Professional reviews | ⏳ Not built — deferred to Services (shared `content_reports.py` already ready for it) | Auth (create) / Guest (list) | Medium |
+| Company/Professional reviews | ⏳ Not built — deferred again from the Services slice (see Phase 2H below); reporting works, rating does not | Auth (create) / Guest (list) | Medium |
+
+## Phase 2H — Services
+
+**New this pass:** the Professional Profile + Service listing backend
+is **built and live-tested** — see `MOBILE_BACKEND_INTEGRATION_REPORT.md`'s
+Phase 2B Services section for the scope decisions (real chat integration
+and real Favorites deliberately not connected, documented there) and the
+full live HTTP test results. Mobile is migrated for the core loop only.
+
+| Feature | Status | Auth | Priority |
+|---|---|---|---|
+| Professional profile (create/update/public view) | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.professional_profiles.*` — one profile per owner (upsert), phone shown publicly by design (business-card model, same as Company). `app/services/profile.tsx` wired (pre-existing local profile keeps editing locally, unchanged). | Auth (create/edit) / Guest (view) | Done |
+| Post/edit/pause/activate/delete a service | ✅ **Built, live-tested, wired.** `souq_masr.api.v1.services.*`. `app/services/post.tsx` wired for create and edit; `app/services/[id].tsx` wired for viewing. | Auth (owner only for mutations) / Guest (view) | Done for post/edit/view |
+| Provider public profile + their services (`professional/[id].tsx`) | ✅ **Built, live-tested, wired** for real provider ids. Reviews section shows honestly empty (rating deferred, see below) rather than mixing in mock data. | Guest | Done (loop), reviews excepted |
+| My services / discovery / search (`my-services.tsx`, `index.tsx`, `results.tsx`) | ⏳ **Backend built+tested** (`get_my_services`, `search_services`) — **mobile screens not yet migrated** | Auth (my-services) / Guest (discovery) | High (closes the discovery gap, same as Jobs) |
+| Favorites for services | ⏳ Not built — the shared local `favorites` mechanism continues (disclosed since Slice 3); a normalized `Souq Masr Service Favorite` table is a small, well-understood follow-up | Auth | Low |
+| Contact a provider via real chat | ⏳ Not built — would need `Souq Masr Conversation.listing` broadened to a Dynamic Link across Listings/Services, out of scope for this pass (risk to an already-shipped DocType); native dialer/WhatsApp links remain the only contact method, unchanged from the pre-existing mock UI | — | Medium |
+| Professional/Service reviews | ⏳ Not built — deferred a second time from this slice too; `content_reports.py`'s reporting already works for both target types | Auth (create) / Guest (list) | Medium |
 
 ---
 

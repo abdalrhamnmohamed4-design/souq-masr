@@ -1,12 +1,15 @@
 /**
- * app/services/[id].tsx — تفاصيل الخدمة (PART 27). مراجعة QA لقيت: مفيش
- * مشاركة ولا مفضلة ولا بلاغ خالص هنا (موجودين في تفاصيل الإعلان العادي
- * والوظيفة بس مش هنا) + الشريط السفلي مكنش بيحسب safe-area — الاتنين
- * اتصلحوا.
+ * app/services/[id].tsx — تفاصيل الخدمة (PART 27).
+ *
+ * Services vertical (Phase 2B): id بتاع SRV-##### معناه خدمة حقيقية.
+ * المفضلة لسه بتستخدم آلية useAppStore.ts's العامة (isFavorite/
+ * toggleFavorite) حتى للخدمات الحقيقية عمدًا — مفيش Souq Masr Service
+ * Favorite منفصل لسه (قرار موثّق، مؤجّل)، وisRealListingId مش بيتطابق مع
+ * SRV-##### أصلًا فمفيش تعارض مع مفضلة الإعلانات الحقيقية.
  */
 import { Linking } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, Share, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/Icon';
@@ -16,6 +19,9 @@ import { Pill } from '@/components/primitives/Pill';
 import { getServiceCategory, getTrade } from '@/mock/jobs/trades';
 import { useRequireAuth } from '@/lib/auth';
 import type { JobsReportReason } from '@/mock/jobs/types';
+import { hasReportedContent, reportContent } from '@/services/contentReportService';
+import { getProfessionalProfileByOwner, type RealProfessionalProfile } from '@/services/professionalProfileService';
+import { getServiceListing, isRealServiceId, type RealServiceListing } from '@/services/serviceListingService';
 import { useJobsStore, useServiceById } from '@/store/useJobsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -35,6 +41,169 @@ const REPORT_REASONS: { key: JobsReportReason; label: string }[] = [
 
 export default function ServiceDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const isReal = isRealServiceId(id);
+  return isReal ? <RealServiceDetail id={id!} /> : <MockServiceDetail id={id} />;
+}
+
+// ============================================================ REAL
+function RealServiceDetail({ id }: { id: string }) {
+  const router = useRouter();
+  const { colors, spacing, radius } = useTheme();
+  const insets = useSafeAreaInsets();
+  const isFav = useAppStore((s) => s.isFavorite);
+  const toggleFav = useAppStore((s) => s.toggleFavorite);
+  const requireAuth = useRequireAuth();
+
+  const [service, setService] = useState<RealServiceListing | null>(null);
+  const [provider, setProvider] = useState<RealProfessionalProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [reported, setReported] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getServiceListing(id).then(async (r) => {
+      if (cancelled || r.status !== 'success') {
+        setLoading(false);
+        return;
+      }
+      setService(r.data);
+      const p = await getProfessionalProfileByOwner(r.data.owner);
+      if (!cancelled && p.status === 'success') setProvider(p.data);
+      setLoading(false);
+    });
+    hasReportedContent('Souq Masr Service', id).then((r) => { if (!cancelled && r.status === 'success') setReported(r.data.has_reported); });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (loading) return <View style={{ flex: 1, backgroundColor: colors.paper }} />;
+  if (!service) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.paper }}>
+        <Text style={{ color: colors.ink3 }}>الخدمة مش موجودة</Text>
+      </View>
+    );
+  }
+
+  const category = getServiceCategory(service.categoryKey);
+  const trade = service.tradeKey ? getTrade(service.tradeKey) : undefined;
+  const activeOffer = !!service.offerPrice && (!service.offerEndsAt || new Date(service.offerEndsAt) > new Date());
+
+  const shareService = () => Share.share({ message: `${service.title}\nعلى سوق مصر` });
+  const toggleFavGuarded = () => requireAuth(() => toggleFav(service.id), { type: 'favorite_service', serviceId: service.id });
+  const reportService = () =>
+    requireAuth(() => {
+      if (reported) {
+        Alert.alert('اتبلّغ عن الخدمة دي', 'شكرًا، البلاغ بتاعك اتسجّل وهيتراجع.');
+        return;
+      }
+      Alert.alert('بلّغ عن الخدمة', 'اختار السبب', [
+        ...REPORT_REASONS.map((r) => ({
+          text: r.label,
+          onPress: async () => {
+            await reportContent('Souq Masr Service', service.id, r.key);
+            setReported(true);
+            Alert.alert('شكرًا', 'اتسجّل البلاغ وهنراجعه.');
+          },
+        })),
+        { text: 'إلغاء', style: 'cancel' as const },
+      ]);
+    });
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.paper }}>
+      <ScreenHeader
+        title="تفاصيل الخدمة"
+        onBack={() => router.back()}
+        right={
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Pressable onPress={shareService}>
+              <Icon name="share" color={colors.ink} size={18} />
+            </Pressable>
+            <Pressable onPress={toggleFavGuarded}>
+              <Icon name="heart" color={isFav(service.id) ? colors.signal : colors.ink} size={18} />
+            </Pressable>
+          </View>
+        }
+      />
+      <ScrollView contentContainerStyle={{ padding: spacing.s5, paddingBottom: 110 + insets.bottom }}>
+        {service.imageUrls.length > 0 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginBottom: spacing.s4 }}>
+            {service.imageUrls.map((uri) => <Image key={uri} source={{ uri }} style={{ width: 160, height: 120, borderRadius: radius.r2 }} />)}
+          </ScrollView>
+        ) : null}
+
+        <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 17, color: colors.ink }}>{service.title}</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: spacing.s2 }}>
+          {category ? <Pill>{category.name}</Pill> : null}
+          {trade ? <Pill>{trade.name}</Pill> : null}
+        </View>
+
+        {activeOffer ? (
+          <>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: spacing.s4 }}>
+              <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 22, color: colors.signal }}>
+                {service.offerPrice!.toLocaleString('en-US')} <Text style={{ fontSize: 12, color: colors.ink3 }}>ج.م</Text>
+              </Text>
+              <Text style={{ fontSize: 13, color: colors.ink3, textDecorationLine: 'line-through' }}>{service.price!.toLocaleString('en-US')}</Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+              <Icon name="flame" size={12} color={colors.signal} />
+              <Text style={{ fontSize: 10.5, color: colors.signal2 }}>
+                عرض لحد {new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'long' }).format(new Date(service.offerEndsAt!))}
+              </Text>
+            </View>
+          </>
+        ) : service.price ? (
+          <Text style={{ fontFamily: 'Cairo_800ExtraBold', fontSize: 22, color: colors.ink, marginTop: spacing.s4 }}>
+            {PRICE_TYPE_LABEL[service.priceType] && service.priceType !== 'hourly' ? `${PRICE_TYPE_LABEL[service.priceType]} ` : ''}
+            {service.price.toLocaleString('en-US')} <Text style={{ fontSize: 12, color: colors.ink3 }}>ج.م{service.priceType === 'hourly' ? '/ساعة' : ''}</Text>
+          </Text>
+        ) : (
+          <Text style={{ fontSize: 13, color: colors.ink3, marginTop: spacing.s4 }}>السعر بعد المعاينة</Text>
+        )}
+
+        <Text style={{ fontSize: 12.5, color: colors.ink2, lineHeight: 22, marginTop: spacing.s4 }}>{service.description}</Text>
+
+        {service.serviceAreas.length > 0 ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: spacing.s4 }}>
+            {service.serviceAreas.map((a) => <Pill key={a} icon={<Icon name="pin" size={11} color={colors.ink2} />}>{a}</Pill>)}
+          </View>
+        ) : null}
+
+        {provider ? (
+          <Pressable onPress={() => router.push(`/services/professional/${service.owner}`)} style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.s3, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.r3, padding: spacing.s3, marginTop: spacing.s5 }}>
+            <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: colors.signalWash, alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="user" size={18} color={colors.signal2} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>{provider.name}</Text>
+              <Text style={{ fontSize: 10.5, color: colors.ink3, marginTop: 2 }}>عرض الملف الكامل</Text>
+            </View>
+            <Icon name="chev-l" size={15} color={colors.ink3} />
+          </Pressable>
+        ) : null}
+
+        <Pressable onPress={reportService} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: spacing.s4 }}>
+          <Icon name="flag" size={13} color={reported ? colors.danger : colors.ink3} />
+          <Text style={{ fontSize: 11, color: reported ? colors.danger : colors.ink3 }}>{reported ? 'اتبلّغ عن الخدمة دي' : 'بلّغ عن الخدمة دي'}</Text>
+        </Pressable>
+      </ScrollView>
+
+      {provider?.phone ? (
+        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: colors.card, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: spacing.s4, paddingHorizontal: spacing.s4, paddingBottom: spacing.s4 + insets.bottom }}>
+          <Button icon={<Icon name="phone" color="#fff" size={16} />} onPress={() => Linking.openURL(`tel:${provider.phone}`)}>
+            اتصال بمقدّم الخدمة
+          </Button>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// ============================================================ MOCK (كان موجود قبل كده، من غير تغيير)
+function MockServiceDetail({ id }: { id: string | undefined }) {
   const router = useRouter();
   const { colors, spacing, radius } = useTheme();
   const insets = useSafeAreaInsets();

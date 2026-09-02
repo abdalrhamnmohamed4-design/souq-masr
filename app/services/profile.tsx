@@ -1,10 +1,15 @@
 /**
  * app/services/profile.tsx — إنشاء/تعديل ملف المحترف (PART 26).
+ *
+ * Services vertical (Phase 2B): لو عندك ملف محلي (mock) قديم، بيفضل
+ * يتعدّل محليًا زي ما هو (مفيش هجرة قسرية) — أي ملف جديد بيتسجّل على
+ * الباك إند الحقيقي مباشرة (souq_masr.api.v1.professional_profiles)،
+ * نفس مبدأ app/jobs/my-company.tsx بالظبط.
  */
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
-import { Image, Pressable, ScrollView, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { LocationPicker } from '@/components/LocationPicker';
 import { Icon } from '@/components/Icon';
 import { ScreenHeader } from '@/components/ScreenHeader';
@@ -15,6 +20,9 @@ import { FormField } from '@/components/primitives/FormField';
 import { getServiceCategories, getTradesForCategory } from '@/mock/jobs/trades';
 import { locationPathLabel } from '@/mock/taxonomy/locations';
 import { isValidEgyptianPhone, toPositiveInt } from '@/lib/validation';
+import { frappeUploadFile } from '@/lib/apiClient';
+import { useMyProfessionalProfile } from '@/hooks/useMyProfessionalProfile';
+import { createOrUpdateMyProfile } from '@/services/professionalProfileService';
 import { useJobsStore } from '@/store/useJobsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -22,23 +30,56 @@ import { useTheme } from '@/theme/ThemeProvider';
 export default function ProfessionalProfileForm() {
   const router = useRouter();
   const { colors, spacing, radius } = useTheme();
-  const existing = useJobsStore((s) => s.professionalProfile);
-  const setProfile = useJobsStore((s) => s.setProfessionalProfile);
+  const setProfileMock = useJobsStore((s) => s.setProfessionalProfile);
   const onboarding = useAppStore((s) => s.onboarding);
+  const profile = useMyProfessionalProfile();
 
-  const [photoUri, setPhotoUri] = useState(existing?.photoUri);
-  const [name, setName] = useState(existing?.name ?? onboarding.name ?? '');
+  const [photoUri, setPhotoUri] = useState<string | undefined>(undefined);
+  const [name, setName] = useState(onboarding.name ?? '');
   const [categoryId, setCategoryId] = useState<string | null>(null);
-  const [tradeId, setTradeId] = useState<string | undefined>(existing?.tradeId);
-  const [description, setDescription] = useState(existing?.description ?? '');
-  const [yearsExperience, setYearsExperience] = useState(existing?.yearsExperience?.toString() ?? '');
-  const [priceStartingFrom, setPriceStartingFrom] = useState(existing?.priceStartingFrom?.toString() ?? '');
-  const [phone, setPhone] = useState(existing?.phone ?? onboarding.phone ?? '');
-  const [whatsapp, setWhatsapp] = useState(existing?.whatsapp ?? '');
-  const [serviceAreas, setServiceAreas] = useState<string[]>(existing?.serviceAreas ?? []);
+  const [tradeId, setTradeId] = useState<string | undefined>(undefined);
+  const [description, setDescription] = useState('');
+  const [yearsExperience, setYearsExperience] = useState('');
+  const [priceStartingFrom, setPriceStartingFrom] = useState('');
+  const [phone, setPhone] = useState(onboarding.phone ?? '');
+  const [whatsapp, setWhatsapp] = useState('');
+  const [serviceAreas, setServiceAreas] = useState<string[]>([]);
   const [locationSheet, setLocationSheet] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    if (hydrated || profile.loading) return;
+    if (profile.mock) {
+      setPhotoUri(profile.mock.photoUri);
+      setName(profile.mock.name);
+      setTradeId(profile.mock.tradeId);
+      setDescription(profile.mock.description);
+      setYearsExperience(profile.mock.yearsExperience?.toString() ?? '');
+      setPriceStartingFrom(profile.mock.priceStartingFrom?.toString() ?? '');
+      setPhone(profile.mock.phone ?? onboarding.phone ?? '');
+      setWhatsapp(profile.mock.whatsapp ?? '');
+      setServiceAreas(profile.mock.serviceAreas);
+    } else if (profile.real) {
+      setPhotoUri(profile.real.photo ?? undefined);
+      setName(profile.real.name);
+      setTradeId(profile.real.tradeKey ?? undefined);
+      setDescription(profile.real.description);
+      setYearsExperience(profile.real.yearsExperience?.toString() ?? '');
+      setPriceStartingFrom(profile.real.priceStartingFrom?.toString() ?? '');
+      setPhone(profile.real.phone || onboarding.phone || '');
+      setWhatsapp(profile.real.whatsapp || '');
+      setServiceAreas(profile.real.serviceAreas);
+    }
+    setHydrated(true);
+  }, [hydrated, profile, onboarding]);
+
   const authBlock = useAuthGuard({ title: 'سجّل دخولك عشان تعمل ملف محترف', description: 'ملف المحترف بيانات مرتبطة بحسابك — سجّل دخولك الأول.' });
   if (authBlock) return authBlock;
+
+  if (profile.loading) {
+    return <View style={{ flex: 1, backgroundColor: colors.paper }} />;
+  }
 
   const trades = categoryId ? getTradesForCategory(categoryId) : [];
 
@@ -51,17 +92,40 @@ export default function ProfessionalProfileForm() {
 
   const canSave = name.trim().length >= 2 && description.trim().length >= 5 && (!phone.trim() || isValidEgyptianPhone(phone));
 
-  const save = () => {
-    setProfile({
-      name: name.trim(), photoUri, tradeId, description: description.trim(),
-      yearsExperience: toPositiveInt(yearsExperience),
-      skills: [], serviceAreas,
+  const save = async () => {
+    if (profile.mock) {
+      setProfileMock({
+        name: name.trim(), photoUri, tradeId, description: description.trim(),
+        yearsExperience: toPositiveInt(yearsExperience),
+        skills: [], serviceAreas,
+        priceStartingFrom: toPositiveInt(priceStartingFrom),
+        phone: phone.trim() || undefined, whatsapp: whatsapp.trim() || undefined,
+        photoUris: [], portfolio: profile.mock.portfolio ?? [],
+      });
+      router.back();
+      return;
+    }
+    setSaving(true);
+    let photoUrl: string | undefined = profile.real?.photo ?? undefined;
+    if (photoUri && photoUri !== profile.real?.photo) {
+      const uploadResult = await frappeUploadFile({ uri: photoUri, name: photoUri.split('/').pop() || `photo-${Date.now()}.jpg`, mimeType: 'image/jpeg' });
+      if (uploadResult.status === 'success') photoUrl = uploadResult.data.fileUrl;
+    }
+    const r = await createOrUpdateMyProfile({
+      name: name.trim(), description: description.trim(), tradeKey: tradeId, photo: photoUrl,
+      yearsExperience: toPositiveInt(yearsExperience), serviceAreas,
       priceStartingFrom: toPositiveInt(priceStartingFrom),
       phone: phone.trim() || undefined, whatsapp: whatsapp.trim() || undefined,
-      photoUris: [], portfolio: existing?.portfolio ?? [],
     });
+    setSaving(false);
+    if (r.status !== 'success') {
+      Alert.alert('تعذّر الحفظ', 'حصلت مشكلة، جرّب تاني.');
+      return;
+    }
     router.back();
   };
+
+  const existing = profile.any;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.paper }}>
@@ -112,7 +176,7 @@ export default function ProfessionalProfileForm() {
         ) : null}
         <FormField label="رقم واتساب (اختياري)" placeholder="01xxxxxxxxx" keyboardType="phone-pad" value={whatsapp} onChangeText={setWhatsapp} />
 
-        <Button disabled={!canSave} onPress={save}>{existing ? 'حفظ التعديلات' : 'إنشاء الملف'}</Button>
+        <Button disabled={!canSave || saving} onPress={save}>{existing ? 'حفظ التعديلات' : 'إنشاء الملف'}</Button>
       </ScrollView>
 
       <LocationPicker
