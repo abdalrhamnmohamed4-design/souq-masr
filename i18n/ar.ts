@@ -230,6 +230,26 @@ const ar = {
     trustedSeller: 'بائع موثوق',
     views: '{count} مشاهدة',
   },
+
+  apiState: {
+    loading: 'جارِ التحميل...',
+    noInternetTitle: 'مفيش اتصال بالإنترنت',
+    noInternetDesc: 'اتأكد إن الإنترنت شغّال عندك وحاول تاني.',
+    backendUnavailableTitle: 'السيرفر مش متاح دلوقتي',
+    backendUnavailableDesc: 'حصلت مشكلة في الوصول للسيرفر. جرّب تاني بعد شوية.',
+    unauthorizedTitle: 'محتاج تسجّل دخولك',
+    unauthorizedDesc: 'الميزة دي محتاجة تسجيل دخول.',
+    forbiddenTitle: 'مفيش صلاحية',
+    forbiddenDesc: 'مش مسموح تشوف المحتوى ده.',
+    notFoundTitle: 'مفيش نتيجة',
+    notFoundDesc: 'الحاجة اللي بتدوّر عليها مش موجودة.',
+    timeoutTitle: 'الاتصال بطيء جدًا',
+    timeoutDesc: 'الطلب أخد وقت أطول من المتوقع. حاول تاني.',
+    genericErrorTitle: 'حصل خطأ',
+    genericErrorDesc: 'حاول تاني بعد شوية.',
+    emptyTitle: 'مفيش نتايج',
+    emptyDesc: 'مفيش حاجة تتعرض هنا دلوقتي.',
+  },
 } as const;
 
 export default ar;

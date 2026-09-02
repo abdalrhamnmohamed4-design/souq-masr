@@ -228,6 +228,26 @@ const en: TranslationShape = {
     trustedSeller: 'Trusted seller',
     views: '{count} views',
   },
+
+  apiState: {
+    loading: 'Loading...',
+    noInternetTitle: 'No internet connection',
+    noInternetDesc: 'Check your internet connection and try again.',
+    backendUnavailableTitle: 'Server unavailable right now',
+    backendUnavailableDesc: 'We couldn’t reach the server. Try again shortly.',
+    unauthorizedTitle: 'Sign-in required',
+    unauthorizedDesc: 'This feature requires signing in.',
+    forbiddenTitle: 'No access',
+    forbiddenDesc: 'You’re not allowed to view this content.',
+    notFoundTitle: 'No results',
+    notFoundDesc: 'What you’re looking for doesn’t exist.',
+    timeoutTitle: 'Connection is too slow',
+    timeoutDesc: 'The request took longer than expected. Try again.',
+    genericErrorTitle: 'Something went wrong',
+    genericErrorDesc: 'Please try again shortly.',
+    emptyTitle: 'Nothing here',
+    emptyDesc: 'There’s nothing to show right now.',
+  },
 };
 
 export default en;
